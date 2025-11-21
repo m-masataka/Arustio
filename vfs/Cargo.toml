@@ -1,0 +1,19 @@
+[package]
+name = "vfs"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+common = { path = "../common" }
+ufs = { path = "../ufs" }
+metadata = { path = "../metadata" }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+bytes = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }

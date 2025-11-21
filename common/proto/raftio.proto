@@ -1,0 +1,12 @@
+syntax = "proto3";
+package arustio.raftio;
+
+import "google/protobuf/empty.proto";
+
+message Bytes {
+  bytes data = 1;
+}
+
+service Raft {
+  rpc Send(Bytes) returns (google.protobuf.Empty);
+}

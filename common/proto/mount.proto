@@ -1,0 +1,55 @@
+syntax = "proto3";
+
+package arustio.mount;
+import "meta.proto";
+
+// Mount service for managing mount points
+service MountService {
+  // Mount an under file system to a virtual path
+  rpc Mount(MountRequest) returns (MountResponse);
+
+  // Unmount a virtual path
+  rpc Unmount(UnmountRequest) returns (UnmountResponse);
+
+  // List all mount points
+  rpc List(ListRequest) returns (ListResponse);
+}
+
+// Request to mount an under file system
+message MountRequest {
+  // Virtual path to mount to (e.g., /dev/dev1)
+  string path = 1;
+
+  // URI of the under file system (e.g., s3a://bucket1/dir1/dir2)
+  string uri = 2;
+
+  // Mount options (key-value pairs)
+  map<string, string> options = 3;
+}
+
+// Response to mount request
+message MountResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+// Request to unmount a path
+message UnmountRequest {
+  // Virtual path to unmount
+  string path = 1;
+}
+
+// Response to unmount request
+message UnmountResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+// Request to list mount points
+message ListRequest {
+}
+
+// Response to list request
+message ListResponse {
+  repeated arustio.meta.Mount mounts = 1;
+}

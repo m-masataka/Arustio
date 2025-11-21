@@ -1,0 +1,126 @@
+syntax = "proto3";
+package arustio.meta;
+import "google/protobuf/empty.proto";
+import "google/protobuf/timestamp.proto";
+
+// API allowing clients to send MetaCmds to the leader
+service MetaApi {
+  rpc Apply(MetaCmd) returns (google.protobuf.Empty);
+  rpc GetLeader (GetLeaderRequest) returns (GetLeaderResponse);
+}
+
+// Container for metadata operations
+message MetaCmd {
+  oneof op {
+    Mkdir   mkdir   = 1;
+    Load    load    = 2;
+    Mount   mount   = 3;
+    Unmount unmount = 4;
+    PutFileMeta put_file_meta = 5;
+  }
+}
+
+message Mkdir  {
+  string full_path = 1;
+  uint64 inode = 2;
+}
+
+message Load   {
+  string full_path = 1;
+  uint64 inode = 2;
+}
+
+message Mount  {
+  string full_path = 1;
+  UfsConfig ufs_config = 2;
+  string description = 3;
+}
+
+message Unmount{
+  string full_path = 1;
+}
+
+message PutFileMeta {
+  string full_path = 1;
+  FileMetadata file_metadata = 2;
+}
+
+message GetLeaderRequest {
+}
+
+message GetLeaderResponse {
+  uint64 leader_id = 1;
+  uint64 term      = 2;
+  string leader_ip = 3;
+}
+
+// -----------------------------
+// Unified UFS config
+// -----------------------------
+message UfsConfig {
+  oneof config {
+    S3Config    s3    = 1;
+    GcsConfig   gcs   = 2;
+    AzureConfig azure = 3;
+    LocalConfig local = 4;
+    MemoryConfig memory = 5;
+  }
+}
+
+// AWS S3
+message S3Config {
+  string bucket = 1;
+  string region = 2;
+  string access_key_id = 3;
+  string secret_access_key = 4;
+  string endpoint = 5;
+}
+
+// Google Cloud Storage
+message GcsConfig {
+  string bucket = 1;
+  string service_account_path = 2;
+}
+
+// Azure Blob
+message AzureConfig {
+  string container = 1;
+  string account = 2;
+  string access_key = 3;
+}
+
+// Local FS
+message LocalConfig {
+  string root_path = 1;
+}
+
+// Memory (no configs)
+message MemoryConfig {}
+
+// -----------------------------
+// FileMetadata
+// -----------------------------
+enum FileType {
+  FILE_TYPE_UNSPECIFIED = 0;
+  FILE = 1;
+  DIRECTORY = 2;
+}
+
+message FileMetadata {
+  // Unique file ID (UUID)
+  string id = 1;
+  // File path
+  string path = 2;
+  // File type
+  FileType file_type = 3;
+  // File size in bytes
+  uint64 size = 4;
+  // Creation time
+  google.protobuf.Timestamp created_at = 5;
+  // Last modification time
+  google.protobuf.Timestamp modified_at = 6;
+  // Parent directory ID (None for root)
+  string parent_id = 7;
+  // UFS path (actual object storage path)
+  string ufs_path = 8;
+}

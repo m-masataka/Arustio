@@ -1,0 +1,171 @@
+syntax = "proto3";
+
+package arustio.file;
+
+// File service for filesystem operations
+service FileService {
+  // List files and directories in a path
+  rpc ListFiles(ListFilesRequest) returns (ListFilesResponse);
+
+  // Get file status (metadata)
+  rpc Stat(StatRequest) returns (StatResponse);
+
+  // Create a directory
+  rpc Mkdir(MkdirRequest) returns (MkdirResponse);
+
+  // Copy file from local to Arustio
+  rpc CopyFromLocal(stream CopyFromLocalRequest) returns (CopyFromLocalResponse);
+
+  // Copy file from Arustio to local
+  rpc CopyToLocal(CopyToLocalRequest) returns (stream CopyToLocalResponse);
+
+  // Read file content
+  rpc ReadFile(ReadFileRequest) returns (stream ReadFileResponse);
+
+  // Write file content
+  rpc WriteFile(stream WriteFileRequest) returns (WriteFileResponse);
+
+  // Remove file
+  rpc RemoveFile(RemoveFileRequest) returns (RemoveFileResponse);
+
+  // Remove directory
+  rpc RemoveDir(RemoveDirRequest) returns (RemoveDirResponse);
+}
+
+// List files request
+message ListFilesRequest {
+  string path = 1;
+}
+
+// File entry information
+message FileEntry {
+  string name = 1;
+  string path = 2;
+  FileType file_type = 3;
+  uint64 size = 4;
+  int64 modified_at = 5;  // Unix timestamp
+}
+
+// File type enum
+enum FileType {
+  FILE_TYPE_UNKNOWN = 0;
+  FILE_TYPE_FILE = 1;
+  FILE_TYPE_DIRECTORY = 2;
+}
+
+// List files response
+message ListFilesResponse {
+  repeated FileEntry entries = 1;
+}
+
+// Stat request
+message StatRequest {
+  string path = 1;
+}
+
+// Stat response
+message StatResponse {
+  FileEntry entry = 1;
+}
+
+// Mkdir request
+message MkdirRequest {
+  string path = 1;
+}
+
+// Mkdir response
+message MkdirResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+// CopyFromLocal request (streaming)
+message CopyFromLocalRequest {
+  oneof data {
+    CopyFromLocalMetadata metadata = 1;
+    bytes chunk = 2;
+  }
+}
+
+// CopyFromLocal metadata
+message CopyFromLocalMetadata {
+  string destination_path = 1;
+  uint64 file_size = 2;
+}
+
+// CopyFromLocal response
+message CopyFromLocalResponse {
+  bool success = 1;
+  string message = 2;
+  uint64 bytes_written = 3;
+}
+
+// CopyToLocal request
+message CopyToLocalRequest {
+  string source_path = 1;
+}
+
+// CopyToLocal response (streaming)
+message CopyToLocalResponse {
+  oneof data {
+    CopyToLocalMetadata metadata = 1;
+    bytes chunk = 2;
+  }
+}
+
+// CopyToLocal metadata
+message CopyToLocalMetadata {
+  uint64 file_size = 1;
+}
+
+// ReadFile request
+message ReadFileRequest {
+  string path = 1;
+}
+
+// ReadFile response (streaming)
+message ReadFileResponse {
+  bytes chunk = 1;
+}
+
+// WriteFile request (streaming)
+message WriteFileRequest {
+  oneof data {
+    WriteFileMetadata metadata = 1;
+    bytes chunk = 2;
+  }
+}
+
+// WriteFile metadata
+message WriteFileMetadata {
+  string path = 1;
+}
+
+// WriteFile response
+message WriteFileResponse {
+  bool success = 1;
+  string message = 2;
+  uint64 bytes_written = 3;
+}
+
+// RemoveFile request
+message RemoveFileRequest {
+  string path = 1;
+}
+
+// RemoveFile response
+message RemoveFileResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+// RemoveDir request
+message RemoveDirRequest {
+  string path = 1;
+}
+
+// RemoveDir response
+message RemoveDirResponse {
+  bool success = 1;
+  string message = 2;
+}

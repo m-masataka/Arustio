@@ -1,0 +1,15 @@
+self_id = 1
+listen = "0.0.0.0:50051"
+fs_listen = "0.0.0.0:50052"
+
+[[peers]]
+id = 1
+addr = "arustio-node1:50051"
+
+[[peers]]
+id = 2
+addr = "arustio-node2:50051"
+
+[[peers]]
+id = 3
+addr = "arustio-node3:50051"

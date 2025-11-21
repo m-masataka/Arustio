@@ -1,0 +1,28 @@
+[package]
+name = "server"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+common = { path = "../common" }
+ufs = { path = "../ufs" }
+vfs = { path = "../vfs" }
+metadata = { path = "../metadata" }
+tokio = { workspace = true }
+tokio-stream = "0.1"
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+bytes = { workspace = true }
+clap = { version = "4.4", features = ["derive"] }
+tonic = { workspace = true }
+prost = { workspace = true }
+async-trait = { workspace = true }
+raft = { workspace = true }
+rocksdb = { workspace = true }
+anyhow = { workspace = true }
+protobuf = "2"
+prost-types = { workspace = true }
+prost-wkt-types = { workspace = true }

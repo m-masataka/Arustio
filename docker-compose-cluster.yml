@@ -1,0 +1,154 @@
+version: '3.8'
+
+services:
+  # MinIO - S3-compatible object storage
+  minio:
+    image: minio/minio:latest
+    container_name: arustio-minio
+    ports:
+      - "9000:9000"  # MinIO API
+      - "9001:9001"  # MinIO Console
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+    networks:
+      - arustio-network
+
+  # MinIO Client - Create buckets on startup
+  minio-init:
+    image: minio/mc:latest
+    container_name: arustio-minio-init
+    depends_on:
+      - minio
+    entrypoint: >
+      /bin/sh -c "
+      sleep 5;
+      /usr/bin/mc alias set myminio http://minio:9000 minioadmin minioadmin;
+      /usr/bin/mc mb myminio/test-bucket --ignore-existing;
+      /usr/bin/mc mb myminio/data-bucket --ignore-existing;
+      /usr/bin/mc mb myminio/temp-bucket --ignore-existing;
+      echo 'MinIO buckets created successfully';
+      "
+    networks:
+      - arustio-network
+
+  # Arustio Server Node 1
+  arustio-node1:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: arustio-node1
+    ports:
+      - "50051:50051"  # gRPC server
+      - "7001:7001"    # Raft communication
+    depends_on:
+      - minio
+      - minio-init
+    environment:
+      S3_BUCKET: test-bucket
+      S3_REGION: us-east-1
+      S3_ENDPOINT: http://minio:9000
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin
+      AWS_EC2_METADATA_DISABLED: "true"
+      RUST_LOG: info
+    command: >
+      --mode server
+      --addr 0.0.0.0:50051
+      --raft
+      --node-id 1
+      --data-dir /data/node-1
+      --raft-addr 0.0.0.0:7001
+    volumes:
+      - node1-data:/data
+    networks:
+      - arustio-network
+
+  # Arustio Server Node 2
+  arustio-node2:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: arustio-node2
+    ports:
+      - "50052:50051"  # gRPC server
+      - "7002:7002"    # Raft communication
+    depends_on:
+      - minio
+      - minio-init
+      - arustio-node1
+    environment:
+      S3_BUCKET: test-bucket
+      S3_REGION: us-east-1
+      S3_ENDPOINT: http://minio:9000
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin
+      AWS_EC2_METADATA_DISABLED: "true"
+      RUST_LOG: info
+    command: >
+      --mode server
+      --addr 0.0.0.0:50051
+      --raft
+      --node-id 2
+      --data-dir /data/node-2
+      --raft-addr 0.0.0.0:7002
+    volumes:
+      - node2-data:/data
+    networks:
+      - arustio-network
+
+  # Arustio Server Node 3
+  arustio-node3:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: arustio-node3
+    ports:
+      - "50053:50051"  # gRPC server
+      - "7003:7003"    # Raft communication
+    depends_on:
+      - minio
+      - minio-init
+      - arustio-node1
+      - arustio-node2
+    environment:
+      S3_BUCKET: test-bucket
+      S3_REGION: us-east-1
+      S3_ENDPOINT: http://minio:9000
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin
+      AWS_EC2_METADATA_DISABLED: "true"
+      RUST_LOG: info
+    command: >
+      --mode server
+      --addr 0.0.0.0:50051
+      --raft
+      --node-id 3
+      --data-dir /data/node-3
+      --raft-addr 0.0.0.0:7003
+    volumes:
+      - node3-data:/data
+    networks:
+      - arustio-network
+
+volumes:
+  minio-data:
+    driver: local
+  node1-data:
+    driver: local
+  node2-data:
+    driver: local
+  node3-data:
+    driver: local
+
+networks:
+  arustio-network:
+    driver: bridge

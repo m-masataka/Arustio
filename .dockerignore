@@ -1,0 +1,10 @@
+target/
+.git/
+.gitignore
+*.md
+docker-compose.yml
+Dockerfile
+.dockerignore
+data/
+*.log
+local/

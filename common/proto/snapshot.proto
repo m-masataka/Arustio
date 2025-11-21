@@ -1,0 +1,11 @@
+syntax = "proto3";
+package arustio.snapshot;
+
+message SnapshotData {
+  repeated Kv kvs = 1;
+}
+
+message Kv {
+  bytes key = 1;
+  bytes value = 2;
+}
