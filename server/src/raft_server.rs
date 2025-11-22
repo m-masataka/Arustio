@@ -1,44 +1,39 @@
 use common::NodeConfig;
 use common::Result;
+use common::meta::MetaCmd;
 use common::meta::meta_api_server;
 use metadata::raft::{
     cluster::RaftClusterState,
-    rocks_store::{
-        RocksStorage,
-        KEY_CONF_STATE,
-    },
-    raft_transport::{
-        Transport,
-        GrpcTransport,
-        PeerStore,
-    },
+    raft_transport::{GrpcTransport, PeerStore, Transport},
+    rocks_store::{KEY_CONF_STATE, RocksStorage},
 };
-use common::meta::MetaCmd;
 use tonic::transport::Server;
 
-use raft::prelude::{
-    ConfChange, EntryType, ConfChangeV2, Config,
-};
+use raft::RawNode;
 use raft::default_logger;
 use raft::prelude::Message as RaftMessage;
-use raft::RawNode;
+use raft::prelude::{ConfChange, ConfChangeV2, Config, EntryType};
 use std::time::Duration;
 use tokio::sync::mpsc;
 
-use raft::prelude::Snapshot;
-use protobuf::Message;
-use protobuf::CodedInputStream;
 use common::raftio;
-use tonic::{Request, Response, Status};
 use metadata::raft::apply::apply_to_kv;
+use protobuf::CodedInputStream;
+use protobuf::Message;
+use raft::prelude::Snapshot;
 use std::sync::Arc;
+use tonic::{Request, Response, Status};
 
-pub async fn start_raft_server(node_id: u64, node_cfg: NodeConfig, storage: RocksStorage) -> Result<()> {
-    // Raft starting 
+pub async fn start_raft_server(
+    node_id: u64,
+    node_cfg: NodeConfig,
+    storage: RocksStorage,
+) -> Result<()> {
+    // Raft starting
     let cfg = Config {
         id: node_id,
-        election_tick: 10,     // ≈1s if 1 tick = 100ms
-        heartbeat_tick: 1,     // 100ms
+        election_tick: 10, // ≈1s if 1 tick = 100ms
+        heartbeat_tick: 1, // 100ms
         max_inflight_msgs: 256,
         check_quorum: true,
         pre_vote: true,
@@ -57,19 +52,21 @@ pub async fn start_raft_server(node_id: u64, node_cfg: NodeConfig, storage: Rock
     bootstrap_if_needed(&storage, node_cfg.clone())
         .map_err(|e| common::Error::Internal(format!("bootstrap_if_needed: {e}")))?;
 
-    let logger = default_logger(); 
+    let logger = default_logger();
     // Assume the storage is empty (no HardState/ConfState)
     let rn = RawNode::new(&cfg, storage, &logger)
         .map_err(|e| common::Error::Internal(format!("RawNode::new: {e}")))?;
 
-    
     let (net_tx, net_rx) = mpsc::channel::<RaftMessage>(2048);
     let (prop_tx, prop_rx) = mpsc::channel::<MetaCmd>(1024);
     let listen_addr = node_cfg.listen.clone();
 
     // Define PeerStore struct if missing
-    let peers: Vec<(u64, String)> =
-        node_cfg.peers.iter().map(|p| (p.id, p.addr.clone())).collect();
+    let peers: Vec<(u64, String)> = node_cfg
+        .peers
+        .iter()
+        .map(|p| (p.id, p.addr.clone()))
+        .collect();
     let peer_store = PeerStore::new(peers);
 
     tokio::spawn({
@@ -79,13 +76,20 @@ pub async fn start_raft_server(node_id: u64, node_cfg: NodeConfig, storage: Rock
         let cluster_state = cluster_state.clone();
         let peer_store = peer_store.clone();
         async move {
-            let _ = start_raft_grpc_server(&listen_addr, net_tx, prop_tx, cluster_state, peer_store.clone()).await;
+            let _ = start_raft_grpc_server(
+                &listen_addr,
+                net_tx,
+                prop_tx,
+                cluster_state,
+                peer_store.clone(),
+            )
+            .await;
         }
     });
 
-
     let tx = GrpcTransport::new(node_id, peer_store, net_tx.clone());
-    run_raft_node(rn, st, net_rx, prop_rx, tx, cluster_state).await
+    run_raft_node(rn, st, net_rx, prop_rx, tx, cluster_state)
+        .await
         .map_err(|e| common::Error::Internal(format!("run_raft_node: {e}")))?;
     Ok(())
 }
@@ -102,7 +106,7 @@ pub async fn run_raft_node(
 
     loop {
         tokio::select! {
-            _ = ticker.tick() => { 
+            _ = ticker.tick() => {
                 let _ = rn.tick();
             },
             Some(msg) = net_rx.recv() => {
@@ -124,7 +128,8 @@ pub async fn run_raft_node(
             if let Some(ss) = rd.ss() {
                 tracing::info!(
                     "SoftState changed: leader_id={} raft_state={:?}",
-                    ss.leader_id, ss.raft_state
+                    ss.leader_id,
+                    ss.raft_state
                 );
                 cluster_state.set_leader(ss.leader_id);
             }
@@ -139,7 +144,10 @@ pub async fn run_raft_node(
                 st.append(rd.entries())?;
             }
             if !rd.snapshot().is_empty() {
-                tracing::debug!("Persisting snapshot at index {}", rd.snapshot().get_metadata().get_index());
+                tracing::debug!(
+                    "Persisting snapshot at index {}",
+                    rd.snapshot().get_metadata().get_index()
+                );
                 // Apply a received snapshot by replacing the KV DB, then install it on the Raft side
                 apply_snapshot_to_kv(&st, rd.snapshot())?;
             }
@@ -155,7 +163,9 @@ pub async fn run_raft_node(
             for m in rd.take_persisted_messages() {
                 tracing::debug!(
                     "Sending Raft message (persisted): from={} to={} type={:?}",
-                    m.get_from(), m.get_to(), m.get_msg_type()
+                    m.get_from(),
+                    m.get_to(),
+                    m.get_msg_type()
                 );
                 tx.send(m).await?;
             }
@@ -174,7 +184,10 @@ pub async fn run_raft_node(
                     EntryType::EntryConfChangeV2 => {
                         tracing::debug!("Applying committed conf change v2: {:?}", ent);
                         let mut cc = ConfChangeV2::default();
-                        <ConfChangeV2 as protobuf::Message>::merge_from_bytes(&mut cc, ent.get_data())?;
+                        <ConfChangeV2 as protobuf::Message>::merge_from_bytes(
+                            &mut cc,
+                            ent.get_data(),
+                        )?;
                         let cs = rn.apply_conf_change(&cc)?;
                         st.set_conf_state(&cs)?;
                     }
@@ -182,7 +195,7 @@ pub async fn run_raft_node(
                         tracing::debug!("Applying committed normal entry: {:?}", ent);
                         if !ent.data.is_empty() {
                             let cmd: MetaCmd = prost::Message::decode(ent.data.as_ref())?;
-                            apply_to_kv(&st, cmd)?;      // Updates the KV column family
+                            apply_to_kv(&st, cmd)?; // Updates the KV column family
                         }
                     }
                 }
@@ -210,7 +223,10 @@ pub async fn run_raft_node(
                     EntryType::EntryConfChangeV2 => {
                         tracing::debug!("Applying committed conf change v2: {:?}", ent);
                         let mut cc = ConfChangeV2::default();
-                        <ConfChangeV2 as protobuf::Message>::merge_from_bytes(&mut cc, ent.get_data())?;
+                        <ConfChangeV2 as protobuf::Message>::merge_from_bytes(
+                            &mut cc,
+                            ent.get_data(),
+                        )?;
                         let cs = rn.apply_conf_change(&cc)?;
                         st.set_conf_state(&cs)?;
                     }
@@ -230,11 +246,7 @@ pub async fn run_raft_node(
     }
 }
 
-
-async fn maybe_make_snapshot(
-    _st: &RocksStorage,
-    _rn: &mut RawNode<RocksStorage>,
-) -> Result<()> {
+async fn maybe_make_snapshot(_st: &RocksStorage, _rn: &mut RawNode<RocksStorage>) -> Result<()> {
     // TODO: implement snapshot creation logic
     // let last_index = st.last_index_inner()?;
     // let first_index = st.first_index_inner()?;
@@ -349,14 +361,15 @@ fn bootstrap_if_needed(st: &RocksStorage, node_cfg: NodeConfig) -> anyhow::Resul
 pub struct RaftService {
     net_tx: mpsc::Sender<RaftMessage>,
 }
-impl RaftService { pub fn new(net_tx: mpsc::Sender<RaftMessage>) -> Self { Self { net_tx } } }
+impl RaftService {
+    pub fn new(net_tx: mpsc::Sender<RaftMessage>) -> Self {
+        Self { net_tx }
+    }
+}
 
 #[tonic::async_trait]
 impl raftio::raft_server::Raft for RaftService {
-    async fn send(
-        &self,
-        req: Request<raftio::Bytes>
-    ) -> std::result::Result<Response<()>, Status> {
+    async fn send(&self, req: Request<raftio::Bytes>) -> std::result::Result<Response<()>, Status> {
         let data = req.into_inner().data;
         let msg = raft::prelude::Message::parse_from_bytes(&data)
             .map_err(|_| Status::invalid_argument("decode raft message"))?;
@@ -369,20 +382,26 @@ impl raftio::raft_server::Raft for RaftService {
     }
 }
 
-pub async fn start_raft_grpc_server(listen: &str,
+pub async fn start_raft_grpc_server(
+    listen: &str,
     net_tx: mpsc::Sender<RaftMessage>,
     prop_tx: mpsc::Sender<MetaCmd>,
     cluster_state: Arc<RaftClusterState>,
     peer_store: PeerStore,
-    ) -> anyhow::Result<()> {
+) -> anyhow::Result<()> {
     Server::builder()
-        .add_service(raftio::raft_server::RaftServer::new(RaftService::new(net_tx)))
-        .add_service(meta_api_server::MetaApiServer::new(MetaService::new(prop_tx, cluster_state.clone(), peer_store.clone())))
+        .add_service(raftio::raft_server::RaftServer::new(RaftService::new(
+            net_tx,
+        )))
+        .add_service(meta_api_server::MetaApiServer::new(MetaService::new(
+            prop_tx,
+            cluster_state.clone(),
+            peer_store.clone(),
+        )))
         .serve(listen.parse()?)
         .await?;
     Ok(())
 }
-
 
 // MetadataService
 pub struct MetaService {
@@ -392,17 +411,22 @@ pub struct MetaService {
 }
 
 impl MetaService {
-    pub fn new(prop_tx: mpsc::Sender<MetaCmd>, cluster_state: Arc<RaftClusterState>, peer_store: PeerStore) -> Self {
-        Self { prop_tx, cluster_state, peer_store }
+    pub fn new(
+        prop_tx: mpsc::Sender<MetaCmd>,
+        cluster_state: Arc<RaftClusterState>,
+        peer_store: PeerStore,
+    ) -> Self {
+        Self {
+            prop_tx,
+            cluster_state,
+            peer_store,
+        }
     }
 }
 
 #[tonic::async_trait]
 impl meta_api_server::MetaApi for MetaService {
-    async fn apply(
-        &self,
-        req: Request<MetaCmd>,
-    ) -> std::result::Result<Response<()>, Status> {
+    async fn apply(&self, req: Request<MetaCmd>) -> std::result::Result<Response<()>, Status> {
         let cmd = req.into_inner();
 
         self.prop_tx

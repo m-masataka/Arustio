@@ -1,13 +1,13 @@
+pub mod config;
 pub mod error;
 pub mod file_metadata;
 pub mod path;
-pub mod config;
 pub mod raft_client;
 
+pub use config::*;
 pub use error::{Error, Result};
 pub use file::*;
 pub use path::*;
-pub use config::*;
 
 // Generated gRPC code
 pub mod mount {

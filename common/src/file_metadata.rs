@@ -105,22 +105,21 @@ impl From<&FileMetadata> for FileStatus {
     }
 }
 
-
-
-use std::convert::TryFrom;
 use crate::meta::FileMetadata as ProtoFileMetadata;
 use prost_types::Timestamp;
+use std::convert::TryFrom;
 
 fn opt_to_string(v: Option<String>) -> String {
     v.unwrap_or_default()
 }
 
 fn string_to_opt(s: String) -> Option<String> {
-    if s.is_empty() {
-        None
-    } else {
-        Some(s)
-    }
+    if s.is_empty() { None } else { Some(s) }
+}
+
+fn timestamp_to_datetime(ts: Timestamp, field: &str) -> Result<DateTime<Utc>, String> {
+    DateTime::<Utc>::from_timestamp(ts.seconds, ts.nanos as u32)
+        .ok_or_else(|| format!("Invalid {} timestamp in FileMetadata", field))
 }
 
 impl From<FileMetadata> for ProtoFileMetadata {
@@ -162,24 +161,22 @@ impl TryFrom<ProtoFileMetadata> for FileMetadata {
             },
             size: proto.size,
             created_at: {
-                let ts = proto.created_at.ok_or_else(|| "Missing created_at in FileMetadata".to_string())?;
-                DateTime::<Utc>::from_utc(
-                    chrono::NaiveDateTime::from_timestamp_opt(ts.seconds, ts.nanos as u32)
-                        .ok_or_else(|| "Invalid created_at timestamp in FileMetadata".to_string())?,
-                    Utc,
-                )
+                let ts = proto
+                    .created_at
+                    .ok_or_else(|| "Missing created_at in FileMetadata".to_string())?;
+                timestamp_to_datetime(ts, "created_at")?
             },
             modified_at: {
-                let ts = proto.modified_at.ok_or_else(|| "Missing modified_at in FileMetadata".to_string())?;
-                DateTime::<Utc>::from_utc(
-                    chrono::NaiveDateTime::from_timestamp_opt(ts.seconds, ts.nanos as u32)
-                        .ok_or_else(|| "Invalid modified_at timestamp in FileMetadata".to_string())?,
-                    Utc,
-                )
+                let ts = proto
+                    .modified_at
+                    .ok_or_else(|| "Missing modified_at in FileMetadata".to_string())?;
+                timestamp_to_datetime(ts, "modified_at")?
             },
             parent_id: match string_to_opt(proto.parent_id) {
-                Some(pid) => Some(Uuid::parse_str(&pid)
-                    .map_err(|e| format!("Invalid UUID in FileMetadata.parent_id: {}", e))?),
+                Some(pid) => Some(
+                    Uuid::parse_str(&pid)
+                        .map_err(|e| format!("Invalid UUID in FileMetadata.parent_id: {}", e))?,
+                ),
                 None => None,
             },
             ufs_path: if proto.ufs_path.is_empty() {

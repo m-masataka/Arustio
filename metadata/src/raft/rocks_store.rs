@@ -1,11 +1,9 @@
 use anyhow::Result;
 use protobuf::Message as PbMessage;
+use raft::GetEntriesContext;
 use raft::prelude::*;
 use raft::{Error as RaftError, Result as RaftResult, Storage};
-use rocksdb::{
-    ColumnFamilyDescriptor, DBWithThreadMode, MultiThreaded, Options, WriteBatch,
-};
-use raft::GetEntriesContext;
+use rocksdb::{ColumnFamilyDescriptor, DBWithThreadMode, MultiThreaded, Options, WriteBatch};
 use std::sync::Arc;
 
 const CF_RAFT_LOG: &str = "raft_log";
@@ -17,7 +15,7 @@ const CF_SNAP_META: &str = "snap_meta";
 pub const KEY_HARD_STATE: &[u8] = b"hard_state";
 pub const KEY_CONF_STATE: &[u8] = b"conf_state";
 pub const KEY_FIRST_INDEX: &[u8] = b"first_index";
-pub const KEY_LAST_INDEX:  &[u8] = b"last_index";
+pub const KEY_LAST_INDEX: &[u8] = b"last_index";
 
 #[derive(Clone)]
 pub struct RocksStorage {
@@ -29,7 +27,6 @@ pub struct RocksStorage {
 }
 
 impl RocksStorage {
-
     pub fn open(path: &str) -> Result<Self> {
         let mut opts = Options::default();
         opts.create_if_missing(true);
@@ -66,7 +63,9 @@ impl RocksStorage {
     }
 
     pub fn append(&self, ents: &[Entry]) -> Result<()> {
-        if ents.is_empty() { return Ok(()); }
+        if ents.is_empty() {
+            return Ok(());
+        }
         let mut wb = WriteBatch::default();
         for e in ents {
             let buf = PbMessage::write_to_bytes(e)?;
@@ -80,13 +79,20 @@ impl RocksStorage {
     pub fn compact_to(&self, to: u64) -> Result<()> {
         // Remove log entries in [first_index, to) and advance first_index to `to`
         let first = self.first_index_inner()?;
-        if to <= first { return Ok(()); }
+        if to <= first {
+            return Ok(());
+        }
         let mut wb = WriteBatch::default();
-        let mut itr = self.db.iterator_cf(&self.cf_log, rocksdb::IteratorMode::From(&u64be(first), rocksdb::Direction::Forward));
+        let mut itr = self.db.iterator_cf(
+            &self.cf_log,
+            rocksdb::IteratorMode::From(&u64be(first), rocksdb::Direction::Forward),
+        );
         for kv in itr.by_ref() {
             let (k, _) = kv?;
             let idx = u64::from_be_bytes(k.as_ref().try_into().unwrap());
-            if idx >= to { break; }
+            if idx >= to {
+                break;
+            }
             wb.delete_cf(&self.cf_log, k);
         }
         wb.put_cf(&self.cf_state, KEY_FIRST_INDEX, &u64be_vec(to));
@@ -132,9 +138,10 @@ impl RocksStorage {
     // List Keys with given prefix from KV CF
     pub fn list_kv_keys(&self, prefix_bytes: &[u8]) -> Result<Vec<String>> {
         let mut keys = Vec::new();
-        let it = self
-            .db
-            .iterator_cf(&self.cf_kv, rocksdb::IteratorMode::From(prefix_bytes, rocksdb::Direction::Forward));
+        let it = self.db.iterator_cf(
+            &self.cf_kv,
+            rocksdb::IteratorMode::From(prefix_bytes, rocksdb::Direction::Forward),
+        );
         for kv in it {
             let (k, _v) = kv?;
             // Break if key does not start with prefix
@@ -165,7 +172,10 @@ impl Storage for RocksStorage {
             .load_conf_state()
             .map_err(to_raft_err)?
             .unwrap_or_default();
-        Ok(RaftState { hard_state: hs, conf_state: cs })
+        Ok(RaftState {
+            hard_state: hs,
+            conf_state: cs,
+        })
     }
 
     fn entries(
@@ -193,7 +203,9 @@ impl Storage for RocksStorage {
         for kv in it.by_ref() {
             let (_, v) = kv.map_err(to_raft_err)?;
             let e = Entry::parse_from_bytes(v.as_ref()).map_err(to_raft_err)?;
-            if e.index >= high { break; }
+            if e.index >= high {
+                break;
+            }
             size += v.len() as u64;
             ents.push(e);
             if max_size.map_or(false, |m| size >= m) {
@@ -209,9 +221,13 @@ impl Storage for RocksStorage {
             return Ok(0);
         }
         let first = self.first_index_inner().map_err(to_raft_err)?;
-        let last  = self.last_index_inner().map_err(to_raft_err)?;
-        if idx < first { return Err(RaftError::Store(raft::StorageError::Compacted)); }
-        if idx > last  { return Err(RaftError::Store(raft::StorageError::Unavailable)); }
+        let last = self.last_index_inner().map_err(to_raft_err)?;
+        if idx < first {
+            return Err(RaftError::Store(raft::StorageError::Compacted));
+        }
+        if idx > last {
+            return Err(RaftError::Store(raft::StorageError::Unavailable));
+        }
         if let Some(v) = self
             .db
             .get_cf(&self.cf_log, u64be(idx))
@@ -241,14 +257,24 @@ impl Storage for RocksStorage {
 
 // ---- Utilities ----
 #[inline]
-fn u64be(i: u64) -> [u8; 8] { i.to_be_bytes() }
-fn u64be_vec(i: u64) -> Vec<u8> { i.to_be_bytes().to_vec() }
-fn be_to_u64(b: &[u8]) -> u64 { let mut a=[0u8;8]; a.copy_from_slice(b); u64::from_be_bytes(a) }
+fn u64be(i: u64) -> [u8; 8] {
+    i.to_be_bytes()
+}
+fn u64be_vec(i: u64) -> Vec<u8> {
+    i.to_be_bytes().to_vec()
+}
+fn be_to_u64(b: &[u8]) -> u64 {
+    let mut a = [0u8; 8];
+    a.copy_from_slice(b);
+    u64::from_be_bytes(a)
+}
 fn to_raft_err<E>(e: E) -> RaftError
 where
     E: Into<anyhow::Error>,
 {
-    RaftError::Store(raft::StorageError::Other(Box::new(AnyhowStdError(e.into()))))
+    RaftError::Store(raft::StorageError::Other(Box::new(AnyhowStdError(
+        e.into(),
+    ))))
 }
 
 /// The RocksDB bindings tie column family handles to the lifetime of the DB.
@@ -257,10 +283,12 @@ where
 unsafe fn extend_cf_lifetime(
     cf: Arc<rocksdb::BoundColumnFamily<'_>>,
 ) -> Arc<rocksdb::BoundColumnFamily<'static>> {
-    std::mem::transmute::<
-        Arc<rocksdb::BoundColumnFamily<'_>>,
-        Arc<rocksdb::BoundColumnFamily<'static>>,
-    >(cf)
+    unsafe {
+        std::mem::transmute::<
+            Arc<rocksdb::BoundColumnFamily<'_>>,
+            Arc<rocksdb::BoundColumnFamily<'static>>,
+        >(cf)
+    }
 }
 
 struct AnyhowStdError(anyhow::Error);

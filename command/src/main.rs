@@ -1,22 +1,21 @@
 use clap::{Parser, Subcommand};
-use common::meta::ufs_config;
-use common::mount::{mount_service_client::MountServiceClient, MountRequest, UnmountRequest, ListRequest};
 use common::file::{
-    file_service_client::FileServiceClient, ListFilesRequest, MkdirRequest,
-    CopyFromLocalRequest, CopyToLocalRequest, copy_from_local_request, copy_to_local_response,
+    CopyFromLocalRequest, CopyToLocalRequest, ListFilesRequest, MkdirRequest,
+    copy_from_local_request, copy_to_local_response, file_service_client::FileServiceClient,
 };
 use common::meta::{
-    meta_api_client::MetaApiClient,
     MetaCmd,
-    meta_cmd, // module generated for the oneof cases
     Mkdir,
+    meta_api_client::MetaApiClient,
+    meta_cmd, // module generated for the oneof cases
+};
+use common::mount::{
+    ListRequest, MountRequest, UnmountRequest, mount_service_client::MountServiceClient,
 };
 use tokio::fs::File;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_stream::StreamExt;
-use ufs::{
-    UfsConfig
-};
+use ufs::UfsConfig;
 
 #[derive(Parser)]
 #[command(name = "arustio")]
@@ -54,7 +53,6 @@ enum MetaCommands {
         inode: u64,
     },
 }
-
 
 #[derive(Subcommand)]
 enum FsCommands {
@@ -133,7 +131,7 @@ async fn main() -> anyhow::Result<()> {
     match cli.command {
         Commands::Fs { fs_command } => {
             handle_fs_command(fs_command, &cli.server).await?;
-        },
+        }
         Commands::Meta { meta_command } => {
             handle_meta_command(meta_command, &cli.server).await?;
         }
@@ -148,16 +146,13 @@ async fn handle_meta_command(command: MetaCommands, server: &str) -> anyhow::Res
     match command {
         MetaCommands::MkDir { full_path, inode } => {
             let request = tonic::Request::new(MetaCmd {
-                op: Some(meta_cmd::Op::Mkdir(Mkdir {
-                    full_path,
-                    inode,
-                })),
+                op: Some(meta_cmd::Op::Mkdir(Mkdir { full_path, inode })),
             });
 
             let response = client.apply(request).await?;
             let response = response.into_inner();
             println!("MkDir response: {:?}", response);
-        },
+        }
     }
 
     Ok(())
@@ -180,17 +175,28 @@ async fn handle_fs_command(command: FsCommands, server: &str) -> anyhow::Result<
         FsCommands::Mkdir { path } => {
             handle_mkdir(path, server).await?;
         }
-        FsCommands::CopyFromLocal { local_path, remote_path } => {
+        FsCommands::CopyFromLocal {
+            local_path,
+            remote_path,
+        } => {
             handle_copy_from_local(local_path, remote_path, server).await?;
         }
-        FsCommands::CopyToLocal { remote_path, local_path } => {
+        FsCommands::CopyToLocal {
+            remote_path,
+            local_path,
+        } => {
             handle_copy_to_local(remote_path, local_path, server).await?;
         }
     }
     Ok(())
 }
 
-async fn handle_mount(path: String, uri: String, options: Vec<String>, server: &str) -> anyhow::Result<()> {
+async fn handle_mount(
+    path: String,
+    uri: String,
+    options: Vec<String>,
+    server: &str,
+) -> anyhow::Result<()> {
     println!("Mounting {} to {}", uri, path);
 
     // Parse options
@@ -230,9 +236,7 @@ async fn handle_unmount(path: String, server: &str) -> anyhow::Result<()> {
     // Connect to server and send unmount request
     let mut client = MountServiceClient::connect(normalize_server_url(server)).await?;
 
-    let request = tonic::Request::new(UnmountRequest {
-        path: path.clone(),
-    });
+    let request = tonic::Request::new(UnmountRequest { path: path.clone() });
 
     let response = client.unmount(request).await?;
     let response = response.into_inner();
@@ -261,43 +265,38 @@ async fn handle_list_mounts(server: &str) -> anyhow::Result<()> {
     }
 
     // Print header
-    println!("{:<30} {:<15} {:<50} {}", "Mount Point", "Type", "URI", "Description");
+    println!(
+        "{:<30} {:<15} {:<50} {}",
+        "Mount Point", "Type", "URI", "Description"
+    );
     println!("{}", "-".repeat(110));
 
     for mount in response.mounts {
         let path = mount.full_path;
-        let ufs_config: UfsConfig = UfsConfig::try_from(mount.ufs_config
-                        .ok_or_else(|| common::Error::Internal("Missing ufs_config in mount entry".to_string()))?)
-                        .map_err(|e| common::Error::Internal(format!("Failed to convert UfsConfig: {}", e)))?;
+        let ufs_config: UfsConfig = UfsConfig::try_from(mount.ufs_config.ok_or_else(|| {
+            common::Error::Internal("Missing ufs_config in mount entry".to_string())
+        })?)
+        .map_err(|e| common::Error::Internal(format!("Failed to convert UfsConfig: {}", e)))?;
         let description = mount.description;
         let mut ufs_type = String::new();
         let mut ufs_uri = String::new();
         match ufs_config {
-            UfsConfig::S3 {
-                bucket,
-                region,
-                access_key_id,
-                secret_access_key,
-                endpoint,
-            }  => {
+            UfsConfig::S3 { bucket, .. } => {
                 ufs_type = "S3".to_string();
                 ufs_uri = format!("s3a://{}/", bucket.clone());
-            },
-            UfsConfig::Local { .. }  => {
+            }
+            UfsConfig::Local { .. } => {
                 ufs_type = "Local".to_string();
                 ufs_uri = "local://".to_string();
-            },
+            }
             other => {
                 ufs_type = "Other".to_string();
                 ufs_uri = format!("{:?}", other);
-            },
+            }
         };
         println!(
             "{:<30} {:<15} {:<50} {}",
-            path,
-            ufs_type,
-            ufs_uri,
-            description
+            path, ufs_type, ufs_uri, description
         );
     }
 
@@ -307,9 +306,7 @@ async fn handle_list_mounts(server: &str) -> anyhow::Result<()> {
 async fn handle_ls(path: String, long_format: bool, server: &str) -> anyhow::Result<()> {
     let mut client = FileServiceClient::connect(normalize_server_url(server)).await?;
 
-    let request = tonic::Request::new(ListFilesRequest {
-        path: path.clone(),
-    });
+    let request = tonic::Request::new(ListFilesRequest { path: path.clone() });
 
     let response = client.list_files(request).await?;
     let entries = response.into_inner().entries;
@@ -332,10 +329,7 @@ async fn handle_ls(path: String, long_format: bool, server: &str) -> anyhow::Res
 
             println!(
                 "{} {:>10} {} {}",
-                file_type,
-                entry.size,
-                timestamp,
-                entry.name
+                file_type, entry.size, timestamp, entry.name
             );
         } else {
             println!("{}", entry.name);
@@ -350,9 +344,7 @@ async fn handle_mkdir(path: String, server: &str) -> anyhow::Result<()> {
 
     let mut client = FileServiceClient::connect(normalize_server_url(server)).await?;
 
-    let request = tonic::Request::new(MkdirRequest {
-        path: path.clone(),
-    });
+    let request = tonic::Request::new(MkdirRequest { path: path.clone() });
 
     let response = client.mkdir(request).await?;
     let response = response.into_inner();
@@ -455,7 +447,9 @@ async fn handle_copy_to_local(
     let mut stream = client.copy_to_local(request).await?.into_inner();
 
     // Read metadata first
-    let first_msg = stream.next().await
+    let first_msg = stream
+        .next()
+        .await
         .ok_or_else(|| anyhow::anyhow!("Empty response from server"))??;
 
     let file_size = match first_msg.data {
@@ -481,7 +475,10 @@ async fn handle_copy_to_local(
         }
     }
 
-    println!("Successfully downloaded {} bytes to {}", total_bytes, local_path);
+    println!(
+        "Successfully downloaded {} bytes to {}",
+        total_bytes, local_path
+    );
 
     Ok(())
 }

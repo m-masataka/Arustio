@@ -1,16 +1,12 @@
 //! Virtual File System with mount support
 
 use crate::FileSystem;
-use common::{Error,
-    file_metadata::FileMetadata,
-    file_metadata::FileStatus,
-    Result,
-};
-use ufs::{Ufs, UfsConfig, UfsOperations};
 use async_trait::async_trait;
 use bytes::Bytes;
+use common::{Error, Result, file_metadata::FileMetadata, file_metadata::FileStatus};
+use metadata::metadata::{MetadataStore, MountInfo};
 use std::sync::Arc;
-use metadata::{metadata::{MetadataStore, MountInfo}};
+use ufs::{Ufs, UfsConfig, UfsOperations};
 
 /// Virtual File System with mount table support
 pub struct VirtualFsWithMounts {
@@ -20,9 +16,7 @@ pub struct VirtualFsWithMounts {
 impl VirtualFsWithMounts {
     /// Create a new Virtual File System with mount support
     pub fn new(metadata: Arc<dyn MetadataStore>) -> Self {
-        Self {
-            metadata,
-        }
+        Self { metadata }
     }
 
     /// Restore mounts from metadata store
@@ -39,7 +33,9 @@ impl VirtualFsWithMounts {
             "/".to_string()
         } else if vfs_path.starts_with(&format!("{}/", mount_path)) {
             // Remove mount path and return relative path without leading slash
-            vfs_path[mount_path.len()..].trim_start_matches('/').to_string()
+            vfs_path[mount_path.len()..]
+                .trim_start_matches('/')
+                .to_string()
         } else {
             // Fallback: use full path without leading slash
             vfs_path.trim_start_matches('/').to_string()
@@ -51,7 +47,11 @@ impl VirtualFsWithMounts {
         let (ufs, relative_path) = self.resolve(path).await?;
 
         // Find mount point path
-        let mount_points = self.metadata.list_mounts().await.unwrap_or_default()
+        let mount_points = self
+            .metadata
+            .list_mounts()
+            .await
+            .unwrap_or_default()
             .iter()
             .map(|m| m.path.clone())
             .collect::<Vec<String>>();
@@ -67,7 +67,6 @@ impl VirtualFsWithMounts {
 
         Ok((ufs, relative_path, mount_path))
     }
-
 
     /// Mount table management
     /// Mount a UFS backend to a VFS path
@@ -103,10 +102,14 @@ impl VirtualFsWithMounts {
         let normalized_path = common::normalize_path(vfs_path)?;
 
         // Remove from mount table
-        self.metadata.delete_mount(&normalized_path).await
-            .map_err(|e| Error::Internal(format!("Failed to unmount {}: {}", normalized_path, e)))?;
+        self.metadata
+            .delete_mount(&normalized_path)
+            .await
+            .map_err(|e| {
+                Error::Internal(format!("Failed to unmount {}: {}", normalized_path, e))
+            })?;
         tracing::info!("Unmounted {}", normalized_path);
-        Ok(())    
+        Ok(())
     }
 
     /// Resolve a VFS path to its mount point and relative path
@@ -167,7 +170,10 @@ impl FileSystem for VirtualFsWithMounts {
 
         // Get parent directory
         let parent_id = if let Some(parent_path) = common::parent_path(&normalized_path) {
-            let parent = self.metadata.get(&parent_path).await?
+            let parent = self
+                .metadata
+                .get(&parent_path)
+                .await?
                 .ok_or_else(|| Error::PathNotFound(parent_path.clone()))?;
 
             if !parent.is_directory() {
@@ -198,7 +204,10 @@ impl FileSystem for VirtualFsWithMounts {
         let parent_path = common::parent_path(&normalized_path)
             .ok_or_else(|| Error::InvalidPath("Cannot create file at root".to_string()))?;
 
-        let parent = self.metadata.get(&parent_path).await?
+        let parent = self
+            .metadata
+            .get(&parent_path)
+            .await?
             .ok_or_else(|| Error::PathNotFound(parent_path.clone()))?;
 
         if !parent.is_directory() {
@@ -213,7 +222,7 @@ impl FileSystem for VirtualFsWithMounts {
 
         // TODO: DELETE THIS LOG
         tracing::info!("Creating file at VFS path");
-        
+
         // Write data to UFS
         ufs.write(&ufs_path, data.clone()).await?;
 
@@ -235,14 +244,18 @@ impl FileSystem for VirtualFsWithMounts {
     async fn read(&self, path: &str) -> Result<Bytes> {
         let normalized_path = common::normalize_path(path)?;
 
-        let metadata = self.metadata.get(&normalized_path).await?
+        let metadata = self
+            .metadata
+            .get(&normalized_path)
+            .await?
             .ok_or_else(|| Error::PathNotFound(normalized_path.clone()))?;
 
         if !metadata.is_file() {
             return Err(Error::NotAFile(normalized_path));
         }
 
-        let ufs_path = metadata.ufs_path
+        let ufs_path = metadata
+            .ufs_path
             .ok_or_else(|| Error::Internal("File metadata missing UFS path".to_string()))?;
 
         // Resolve to mount point to get the right UFS instance
@@ -254,14 +267,19 @@ impl FileSystem for VirtualFsWithMounts {
     async fn write(&self, path: &str, data: Bytes) -> Result<()> {
         let normalized_path = common::normalize_path(path)?;
 
-        let mut metadata = self.metadata.get(&normalized_path).await?
+        let mut metadata = self
+            .metadata
+            .get(&normalized_path)
+            .await?
             .ok_or_else(|| Error::PathNotFound(normalized_path.clone()))?;
 
         if !metadata.is_file() {
             return Err(Error::NotAFile(normalized_path));
         }
 
-        let ufs_path = metadata.ufs_path.clone()
+        let ufs_path = metadata
+            .ufs_path
+            .clone()
             .ok_or_else(|| Error::Internal("File metadata missing UFS path".to_string()))?;
 
         // Resolve to mount point
@@ -281,7 +299,10 @@ impl FileSystem for VirtualFsWithMounts {
     async fn stat(&self, path: &str) -> Result<FileStatus> {
         let normalized_path = common::normalize_path(path)?;
 
-        let metadata = self.metadata.get(&normalized_path).await?
+        let metadata = self
+            .metadata
+            .get(&normalized_path)
+            .await?
             .ok_or_else(|| Error::PathNotFound(normalized_path))?;
 
         Ok(FileStatus::from(&metadata))
@@ -307,8 +328,9 @@ impl FileSystem for VirtualFsWithMounts {
                 };
                 let meta = FileMetadata::new_directory(normalized_path.clone(), parent_id);
                 self.metadata.put(meta).await?;
-                self.metadata.get(&normalized_path).await?
-                    .ok_or_else(|| Error::Internal("Failed to create directory metadata".to_string()))?
+                self.metadata.get(&normalized_path).await?.ok_or_else(|| {
+                    Error::Internal("Failed to create directory metadata".to_string())
+                })?
             }
         };
 
@@ -370,10 +392,8 @@ impl FileSystem for VirtualFsWithMounts {
                 };
 
                 // Create metadata for the directory
-                let sub_dir_metadata = FileMetadata::new_directory(
-                    dir_path.clone(),
-                    Some(dir_metadata.id),
-                );
+                let sub_dir_metadata =
+                    FileMetadata::new_directory(dir_path.clone(), Some(dir_metadata.id));
                 self.metadata.put(sub_dir_metadata.clone()).await?;
                 result.push(FileStatus::from(&sub_dir_metadata));
             }
@@ -385,7 +405,10 @@ impl FileSystem for VirtualFsWithMounts {
     async fn remove_file(&self, path: &str) -> Result<()> {
         let normalized_path = common::normalize_path(path)?;
 
-        let metadata = self.metadata.get(&normalized_path).await?
+        let metadata = self
+            .metadata
+            .get(&normalized_path)
+            .await?
             .ok_or_else(|| Error::PathNotFound(normalized_path.clone()))?;
 
         if !metadata.is_file() {
@@ -394,7 +417,8 @@ impl FileSystem for VirtualFsWithMounts {
 
         // Delete from UFS
         if let Some(ufs_path) = &metadata.ufs_path {
-            let (ufs, _relative_path, _mount_path) = self.get_mount_for_path(&normalized_path).await?;
+            let (ufs, _relative_path, _mount_path) =
+                self.get_mount_for_path(&normalized_path).await?;
             ufs.delete(ufs_path).await?;
         }
 
@@ -407,7 +431,10 @@ impl FileSystem for VirtualFsWithMounts {
     async fn remove_dir(&self, path: &str) -> Result<()> {
         let normalized_path = common::normalize_path(path)?;
 
-        let metadata = self.metadata.get(&normalized_path).await?
+        let metadata = self
+            .metadata
+            .get(&normalized_path)
+            .await?
             .ok_or_else(|| Error::PathNotFound(normalized_path.clone()))?;
 
         if !metadata.is_directory() {
@@ -436,38 +463,38 @@ impl FileSystem for VirtualFsWithMounts {
 // impl MountableFileSystem for VirtualFsWithMounts {
 //     async fn mount(&self, vfs_path: &str, config: UfsConfig) -> Result<()> {
 //         let normalized_path = common::normalize_path(vfs_path)?;
-// 
+//
 //         // Create mount point directory in metadata if it doesn't exist
 //         if self.metadata.get(&normalized_path).await?.is_none() {
 //             // Get parent directory
 //             let parent_id = if let Some(parent_path) = common::parent_path(&normalized_path) {
 //                 let parent = self.metadata.get(&parent_path).await?
 //                     .ok_or_else(|| Error::PathNotFound(parent_path.clone()))?;
-// 
+//
 //                 if !parent.is_directory() {
 //                     return Err(Error::NotADirectory(parent_path));
 //                 }
-// 
+//
 //                 Some(parent.id)
 //             } else {
 //                 None
 //             };
-// 
+//
 //             // Create directory metadata for mount point
 //             let metadata = FileMetadata::new_directory(normalized_path.clone(), parent_id);
 //             self.metadata.put(metadata).await?;
 //         }
-// 
+//
 //         // Mount in mount table
 //         // self.mount_table.mount(&normalized_path, config).await?;
-// 
+//
 //         Ok(())
 //     }
-// 
+//
 //     async fn unmount(&self, vfs_path: &str) -> Result<()> {
 //         // self.mount_table.unmount(vfs_path).await
 //     }
-// 
+//
 //     async fn list_mounts(&self) -> Vec<String> {
 //         //self.mount_table.list_mounts().await
 //     }

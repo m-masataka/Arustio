@@ -1,24 +1,20 @@
 mod grpc_server;
 mod raft_server;
 
-use common::{NodeConfig, Result};
-use vfs::{FileSystem, VirtualFsWithMounts};
 use clap::Parser;
-use std::{
-    sync::Arc,
-    net::SocketAddr,
-};
+use common::{NodeConfig, Result};
+use std::{net::SocketAddr, sync::Arc};
 use tokio::sync::RwLock;
 use tonic::transport::Server;
+use vfs::{FileSystem, VirtualFsWithMounts};
 
-use grpc_server::{ArustioMountService, ArustioFileService};
-use raft_server::start_raft_server;
-use metadata::raft::raft_store::RaftMetadataStore;
-use metadata::metadata::MetadataStore;
-use metadata::raft::rocks_store::RocksStorage;
 use common::raft_client::RaftClient;
-
-
+use grpc_server::{ArustioFileService, ArustioMountService};
+use metadata::RocksMetadataStore;
+use metadata::metadata::MetadataStore;
+use metadata::raft::raft_store::RaftMetadataStore;
+use metadata::raft::rocks_store::RocksStorage;
+use raft_server::start_raft_server;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -63,9 +59,19 @@ async fn main() -> Result<()> {
 
     let args = Args::parse();
     let node_id = args.node_id.unwrap_or(1);
-    let data_dir = args.data_dir.clone().unwrap_or_else(|| format!("./data/node-{}", node_id));
-    let config_path= args.config_path.clone().unwrap_or_else(|| "config.toml".to_string());
-    tracing::info!("Starting Arustio node {} with data dir: {}", node_id, data_dir);
+    let data_dir = args
+        .data_dir
+        .clone()
+        .unwrap_or_else(|| format!("./data/node-{}", node_id));
+    let config_path = args
+        .config_path
+        .clone()
+        .unwrap_or_else(|| "config.toml".to_string());
+    tracing::info!(
+        "Starting Arustio node {} with data dir: {}",
+        node_id,
+        data_dir
+    );
     let node_cfg = NodeConfig::from_file(&config_path)
         .map_err(|e| common::Error::Internal(format!("NodeConfig::from_file: {e}")))?;
     tracing::info!("Loaded config: {:?}", node_cfg);
@@ -73,30 +79,34 @@ async fn main() -> Result<()> {
         common::Error::Internal(format!("Invalid fs_listen address in config: {}", e))
     })?;
 
-    let storage = RocksStorage::open(&data_dir)
-        .map_err(|e| common::Error::Internal(format!("RocksStorage::open: {e}")))?;
+    if args.raft {
+        let storage = RocksStorage::open(&data_dir)
+            .map_err(|e| common::Error::Internal(format!("RocksStorage::open: {e}")))?;
+        let raft_client = RaftClient::new().await;
+        let metadata: Arc<dyn MetadataStore> =
+            Arc::new(RaftMetadataStore::new(raft_client, storage.clone()));
 
+        let grpc_metadata = metadata.clone();
+        tokio::spawn(async move {
+            if let Err(e) = run_grpc_server(listen_addr, grpc_metadata).await {
+                tracing::error!("gRPC server exited: {}", e);
+            }
+        });
 
-    let storage_for_grpc = storage.clone();
-    tokio::spawn(async move {
-        // Placeholder for other background tasks iaf needed
-        run_grpc_server(listen_addr, storage_for_grpc).await.unwrap();
-    });
-
-    let _ = start_raft_server(node_id, node_cfg, storage.clone()).await;
+        start_raft_server(node_id, node_cfg, storage).await?;
+    } else {
+        let metadata: Arc<dyn MetadataStore> = Arc::new(
+            RocksMetadataStore::open(&data_dir)
+                .map_err(|e| common::Error::Internal(format!("RocksMetadataStore::open: {e}")))?,
+        );
+        run_grpc_server(listen_addr, metadata).await?;
+    }
 
     Ok(())
 }
 
-
 /// Run the gRPC server
-async fn run_grpc_server(addr: SocketAddr, storage: RocksStorage) -> Result<()> {
-    let raft_client = RaftClient::new().await; // Placeholder, initialize as needed
-    let metadata: Arc<dyn MetadataStore> = Arc::new(RaftMetadataStore::new(
-        raft_client, // Placeholder, initialize as needed
-        storage, // Placeholder path
-    ));
-
+async fn run_grpc_server(addr: SocketAddr, metadata: Arc<dyn MetadataStore>) -> Result<()> {
     // Create Virtual FS with mount support
     let vfs = Arc::new(RwLock::new(VirtualFsWithMounts::new(metadata)));
 
@@ -119,8 +129,6 @@ async fn run_grpc_server(addr: SocketAddr, storage: RocksStorage) -> Result<()> 
     // Create gRPC services
     let mount_service = ArustioMountService::new(vfs.clone()).into_server();
     let file_service = ArustioFileService::new(vfs.clone()).into_server();
-
-    
 
     tracing::info!("Ready to accept mount and file operations");
 

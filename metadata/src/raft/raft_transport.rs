@@ -1,14 +1,14 @@
-use common::raftio;
-use raft::prelude::Message;
-use async_trait::async_trait;
-use raft::prelude::Message as RaftMessage;
-use tokio::sync::mpsc;
-use protobuf::Message as ProtobufMessage; // Import the trait for write_to_bytes
 use anyhow::Result;
-use tonic::transport::Channel;
+use async_trait::async_trait;
+use common::raftio;
+use protobuf::Message as ProtobufMessage; // Import the trait for write_to_bytes
+use raft::prelude::Message;
+use raft::prelude::Message as RaftMessage;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
+use tokio::sync::mpsc;
+use tonic::transport::Channel;
 
 #[derive(Clone)]
 pub struct PeerStore {
@@ -17,7 +17,9 @@ pub struct PeerStore {
 
 impl PeerStore {
     pub fn new(initial: Vec<(u64, String)>) -> Self {
-        Self { map: std::sync::Arc::new(tokio::sync::RwLock::new(initial.into_iter().collect())) }
+        Self {
+            map: std::sync::Arc::new(tokio::sync::RwLock::new(initial.into_iter().collect())),
+        }
     }
     async fn resolve(&self, id: u64) -> Option<String> {
         self.map.read().await.get(&id).cloned()
@@ -36,7 +38,6 @@ impl PeerStore {
         }
     }
 }
-
 
 pub struct GrpcTransport {
     self_id: u64,

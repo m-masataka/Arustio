@@ -7,15 +7,14 @@
 //! - Azure Blob Storage
 //! - Local filesystem (for testing)
 
-use common::{Error, Result};
 use async_trait::async_trait;
 use bytes::Bytes;
+use common::{Error, Result};
 use object_store::{ObjectStore, path::Path as ObjectPath};
 use std::sync::Arc;
 
 pub mod config;
 pub mod store;
-pub mod convert;
 
 pub use config::UfsConfig;
 pub use store::UnifiedStore;
@@ -73,10 +72,15 @@ impl Ufs {
 impl UfsOperations for Ufs {
     async fn read(&self, path: &str) -> Result<Bytes> {
         let object_path = Self::to_object_path(path);
-        let result = self.store.get(&object_path).await
+        let result = self
+            .store
+            .get(&object_path)
+            .await
             .map_err(|e| Error::Storage(format!("Failed to read {}: {}", path, e)))?;
 
-        let bytes = result.bytes().await
+        let bytes = result
+            .bytes()
+            .await
             .map_err(|e| Error::Storage(format!("Failed to read bytes from {}: {}", path, e)))?;
 
         Ok(bytes)
@@ -84,14 +88,18 @@ impl UfsOperations for Ufs {
 
     async fn write(&self, path: &str, data: Bytes) -> Result<()> {
         let object_path = Self::to_object_path(path);
-        self.store.put(&object_path, data.into()).await
+        self.store
+            .put(&object_path, data.into())
+            .await
             .map_err(|e| Error::Storage(format!("Failed to write {}: {}", path, e)))?;
         Ok(())
     }
 
     async fn delete(&self, path: &str) -> Result<()> {
         let object_path = Self::to_object_path(path);
-        self.store.delete(&object_path).await
+        self.store
+            .delete(&object_path)
+            .await
             .map_err(|e| Error::Storage(format!("Failed to delete {}: {}", path, e)))?;
         Ok(())
     }
@@ -101,14 +109,19 @@ impl UfsOperations for Ufs {
         match self.store.head(&object_path).await {
             Ok(_) => Ok(true),
             Err(object_store::Error::NotFound { .. }) => Ok(false),
-            Err(e) => Err(Error::Storage(format!("Failed to check existence of {}: {}", path, e))),
+            Err(e) => Err(Error::Storage(format!(
+                "Failed to check existence of {}: {}",
+                path, e
+            ))),
         }
     }
 
     async fn size(&self, path: &str) -> Result<u64> {
         let object_path = Self::to_object_path(path);
-        let meta = self.store.head(&object_path).await
-            .map_err(|e| Error::Storage(format!("Failed to get metadata for {}: {}", path, e)))?;
+        let meta =
+            self.store.head(&object_path).await.map_err(|e| {
+                Error::Storage(format!("Failed to get metadata for {}: {}", path, e))
+            })?;
         Ok(meta.size as u64)
     }
 
@@ -136,7 +149,10 @@ impl UfsOperations for Ufs {
             Some(ObjectPath::from(prefix_path))
         };
 
-        let list_result = self.store.list_with_delimiter(prefix_path.as_ref()).await
+        let list_result = self
+            .store
+            .list_with_delimiter(prefix_path.as_ref())
+            .await
             .map_err(|e| Error::Storage(format!("Failed to list directory {}: {}", prefix, e)))?;
 
         // Get files

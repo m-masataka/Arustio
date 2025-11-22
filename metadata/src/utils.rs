@@ -1,6 +1,6 @@
 pub const MOUNT_PREFIX: &[u8] = b"M:";
-pub const PATH_PREFIX:  &[u8] = b"P:";
-pub const ID_PREFIX:    &[u8] = b"I:";
+pub const PATH_PREFIX: &[u8] = b"P:";
+pub const ID_PREFIX: &[u8] = b"I:";
 
 /// Helper that turns a u64 into an 8-byte big-endian array
 pub fn u64be_bytes(x: u64) -> [u8; 8] {

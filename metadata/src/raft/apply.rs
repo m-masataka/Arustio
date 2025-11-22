@@ -1,19 +1,11 @@
+use crate::raft::rocks_store::RocksStorage;
+use crate::utils::{kv_key_mount_path, kv_key_path, u64be_bytes};
 use common::Result;
 use common::meta::MetaCmd;
 use common::meta::Mount;
 use common::meta::meta_cmd::Op;
-use crate::raft::rocks_store::RocksStorage;
-use crate::raft::utils:: {
-    kv_key_path,
-    kv_key_mount_path,
-    kv_key_id,
-    u64be_bytes,
-};
-
-use rocksdb::WriteBatch;
 use prost::Message;
-
-
+use rocksdb::WriteBatch;
 
 pub fn apply_to_kv(st: &RocksStorage, cmd: MetaCmd) -> Result<()> {
     tracing::info!("Applying MetaCmd to KV store: {:?}", cmd);
@@ -51,7 +43,10 @@ pub fn apply_to_kv(st: &RocksStorage, cmd: MetaCmd) -> Result<()> {
             match &p.file_metadata {
                 Some(file_metadata) => {
                     file_metadata.encode(&mut val).map_err(|e| {
-                        common::Error::Internal(format!("Failed to encode FileMetadata entry: {}", e))
+                        common::Error::Internal(format!(
+                            "Failed to encode FileMetadata entry: {}",
+                            e
+                        ))
                     })?;
                     wb.put_cf(&st.cf_kv, key, val);
                 }

@@ -1,22 +1,21 @@
-use common::mount::{
-    mount_service_server::{MountService, MountServiceServer},
-    MountRequest, MountResponse, UnmountRequest, UnmountResponse, ListRequest, ListResponse,
+use bytes::Bytes;
+use common::file::{
+    CopyFromLocalRequest, CopyFromLocalResponse, CopyToLocalRequest, CopyToLocalResponse,
+    FileEntry, FileType, ListFilesRequest, ListFilesResponse, MkdirRequest, MkdirResponse,
+    ReadFileRequest, ReadFileResponse, RemoveDirRequest, RemoveDirResponse, RemoveFileRequest,
+    RemoveFileResponse, StatRequest, StatResponse, WriteFileRequest, WriteFileResponse,
+    file_service_server::{FileService, FileServiceServer},
 };
 use common::meta::Mount;
-use common::file::{
-    file_service_server::{FileService, FileServiceServer},
-    ListFilesRequest, ListFilesResponse, StatRequest, StatResponse, MkdirRequest, MkdirResponse,
-    CopyFromLocalRequest, CopyFromLocalResponse, CopyToLocalRequest, CopyToLocalResponse,
-    ReadFileRequest, ReadFileResponse, WriteFileRequest, WriteFileResponse,
-    RemoveFileRequest, RemoveFileResponse, RemoveDirRequest, RemoveDirResponse,
-    FileEntry, FileType,
+use common::mount::{
+    ListRequest, ListResponse, MountRequest, MountResponse, UnmountRequest, UnmountResponse,
+    mount_service_server::{MountService, MountServiceServer},
 };
-use tonic::{Request, Response, Status};
-use vfs::{FileSystem, VirtualFsWithMounts};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio_stream::wrappers::ReceiverStream;
-use bytes::Bytes;
+use tonic::{Request, Response, Status};
+use vfs::{FileSystem, VirtualFsWithMounts};
 
 pub struct ArustioMountService {
     vfs: Arc<RwLock<VirtualFsWithMounts>>,
@@ -24,9 +23,7 @@ pub struct ArustioMountService {
 
 impl ArustioMountService {
     pub fn new(vfs: Arc<RwLock<VirtualFsWithMounts>>) -> Self {
-        Self {
-            vfs,
-        }
+        Self { vfs }
     }
 
     pub fn into_server(self) -> MountServiceServer<Self> {
@@ -46,19 +43,6 @@ impl MountService for ArustioMountService {
         // Parse URI to UFS config
         let ufs_config = parse_uri_to_config(&req.uri, req.options.clone())
             .map_err(|e| Status::invalid_argument(format!("Invalid URI: {}", e)))?;
-
-        // Determine UFS type from URI
-        let ufs_type = if req.uri.starts_with("s3://") || req.uri.starts_with("s3a://") {
-            "S3".to_string()
-        } else if req.uri.starts_with("gs://") || req.uri.starts_with("gcs://") {
-            "GCS".to_string()
-        } else if req.uri.starts_with("local://") {
-            "Local".to_string()
-        } else if req.uri.starts_with("mem://") || req.uri == "memory" {
-            "Memory".to_string()
-        } else {
-            "Unknown".to_string()
-        };
 
         // Mount the filesystem
         let vfs = self.vfs.read().await;
@@ -119,10 +103,7 @@ impl MountService for ArustioMountService {
         }
     }
 
-    async fn list(
-        &self,
-        _request: Request<ListRequest>,
-    ) -> Result<Response<ListResponse>, Status> {
+    async fn list(&self, _request: Request<ListRequest>) -> Result<Response<ListResponse>, Status> {
         tracing::info!("Received list mount points request");
 
         let vfs = self.vfs.read().await;
@@ -130,12 +111,10 @@ impl MountService for ArustioMountService {
 
         let mut mounts: Vec<Mount> = mount_info_list
             .into_iter()
-            .map(|mount| {
-                Mount {
-                    full_path: mount.path.clone(),
-                    ufs_config: Some(mount.config.clone().into()),
-                    description: "Mounted UFS".to_string(),
-                }
+            .map(|mount| Mount {
+                full_path: mount.path.clone(),
+                ufs_config: Some(mount.config.clone().into()),
+                description: "Mounted UFS".to_string(),
             })
             .collect();
 
@@ -183,7 +162,9 @@ impl FileService for ArustioFileService {
                         path: e.path.clone(),
                         file_type: match e.file_type {
                             common::file_metadata::FileType::File => FileType::File as i32,
-                            common::file_metadata::FileType::Directory => FileType::Directory as i32,
+                            common::file_metadata::FileType::Directory => {
+                                FileType::Directory as i32
+                            }
                         },
                         size: e.size,
                         modified_at: e.modified_at.timestamp(),
@@ -198,10 +179,7 @@ impl FileService for ArustioFileService {
         }
     }
 
-    async fn stat(
-        &self,
-        request: Request<StatRequest>,
-    ) -> Result<Response<StatResponse>, Status> {
+    async fn stat(&self, request: Request<StatRequest>) -> Result<Response<StatResponse>, Status> {
         let req = request.into_inner();
         tracing::info!("Received stat request: path={}", req.path);
 
@@ -225,7 +203,10 @@ impl FileService for ArustioFileService {
 
                 Ok(Response::new(StatResponse { entry: Some(entry) }))
             }
-            Err(e) => Err(Status::not_found(format!("Failed to get file status: {}", e))),
+            Err(e) => Err(Status::not_found(format!(
+                "Failed to get file status: {}",
+                e
+            ))),
         }
     }
 
@@ -298,10 +279,16 @@ impl FileService for ArustioFileService {
         // TODO: DELETE THIS LOG
         tracing::info!("Completed receiving file upload READ:");
 
-        match vfs.create(&metadata.destination_path, Bytes::from(buffer)).await {
+        match vfs
+            .create(&metadata.destination_path, Bytes::from(buffer))
+            .await
+        {
             Ok(_) => Ok(Response::new(CopyFromLocalResponse {
                 success: true,
-                message: format!("Successfully uploaded file to {}", metadata.destination_path),
+                message: format!(
+                    "Successfully uploaded file to {}",
+                    metadata.destination_path
+                ),
                 bytes_written,
             })),
             Err(e) => Ok(Response::new(CopyFromLocalResponse {
@@ -337,7 +324,9 @@ impl FileService for ArustioFileService {
 
             if tx
                 .send(Ok(CopyToLocalResponse {
-                    data: Some(common::file::copy_to_local_response::Data::Metadata(metadata)),
+                    data: Some(common::file::copy_to_local_response::Data::Metadata(
+                        metadata,
+                    )),
                 }))
                 .await
                 .is_err()
@@ -495,7 +484,8 @@ fn parse_uri_to_config(
     options: std::collections::HashMap<String, String>,
 ) -> Result<ufs::UfsConfig, String> {
     if uri.starts_with("s3://") || uri.starts_with("s3a://") {
-        let without_prefix = uri.strip_prefix("s3://")
+        let without_prefix = uri
+            .strip_prefix("s3://")
             .or_else(|| uri.strip_prefix("s3a://"))
             .unwrap();
 
@@ -504,22 +494,27 @@ fn parse_uri_to_config(
 
         Ok(ufs::UfsConfig::S3 {
             bucket,
-            region: options.get("region")
+            region: options
+                .get("region")
                 .cloned()
                 .or_else(|| std::env::var("AWS_REGION").ok())
                 .unwrap_or_else(|| "us-east-1".to_string()),
-            access_key_id: options.get("access_key_id")
+            access_key_id: options
+                .get("access_key_id")
                 .cloned()
                 .or_else(|| std::env::var("AWS_ACCESS_KEY_ID").ok()),
-            secret_access_key: options.get("secret_access_key")
+            secret_access_key: options
+                .get("secret_access_key")
                 .cloned()
                 .or_else(|| std::env::var("AWS_SECRET_ACCESS_KEY").ok()),
-            endpoint: options.get("endpoint")
+            endpoint: options
+                .get("endpoint")
                 .cloned()
                 .or_else(|| std::env::var("S3_ENDPOINT").ok()),
         })
     } else if uri.starts_with("gs://") || uri.starts_with("gcs://") {
-        let without_prefix = uri.strip_prefix("gs://")
+        let without_prefix = uri
+            .strip_prefix("gs://")
             .or_else(|| uri.strip_prefix("gcs://"))
             .unwrap();
 
@@ -541,4 +536,3 @@ fn parse_uri_to_config(
         Err(format!("Unsupported URI scheme: {}", uri))
     }
 }
-

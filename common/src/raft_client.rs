@@ -1,10 +1,8 @@
 // create client class
 use crate::meta::{
-    meta_api_client::MetaApiClient,
-    MetaCmd,
-    meta_cmd, // module generated for the oneof cases
-    Mkdir,
     GetLeaderRequest, // Add this import
+    MetaCmd,
+    meta_api_client::MetaApiClient,
 };
 
 #[derive(Clone)]
@@ -29,10 +27,7 @@ impl RaftClient {
         Ok(leader_info.leader_ip)
     }
 
-    pub async fn send_command(
-        &self,
-        cmd: MetaCmd,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn send_command(&self, cmd: MetaCmd) -> Result<(), Box<dyn std::error::Error>> {
         let leader_address = self.get_leader_address().await?;
         tracing::info!("Leader address: {}", leader_address);
         let dst_url = format!("http://{}", leader_address);

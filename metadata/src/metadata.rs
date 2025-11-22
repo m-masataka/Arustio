@@ -4,12 +4,12 @@
 //! The actual implementation can be backed by different storage systems
 //! (e.g., RocksDB, distributed Raft-based storage).
 
-use common::file_metadata::FileMetadata;
-use common::Result;
-use ufs::UfsConfig;
 use async_trait::async_trait;
+use common::Result;
+use common::file_metadata::FileMetadata;
+use serde::{Deserialize, Serialize};
+use ufs::UfsConfig;
 use uuid::Uuid;
-use serde::{Serialize, Deserialize};
 
 /// Mount point configuration stored in metadata
 #[derive(Debug, Clone, Serialize, Deserialize)]

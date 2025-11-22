@@ -1,6 +1,6 @@
+use anyhow::Result;
 use serde::Deserialize;
 use std::fs;
-use anyhow::Result;
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct PeerConfig {

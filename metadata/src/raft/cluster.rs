@@ -1,5 +1,4 @@
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
 
 #[derive(Default)]
 pub struct RaftClusterState {

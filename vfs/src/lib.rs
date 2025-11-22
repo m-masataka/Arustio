@@ -9,15 +9,12 @@
 //! - stat: Get file/directory status
 //! - rm: Remove files and directories
 
-use common::{
-    Result,
-    file_metadata::FileStatus
-};
 use async_trait::async_trait;
 use bytes::Bytes;
+use common::{Result, file_metadata::FileStatus};
 
-pub mod operations;
 mod lib_mount;
+pub mod operations;
 
 pub use lib_mount::VirtualFsWithMounts;
 

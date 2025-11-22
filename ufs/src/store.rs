@@ -42,7 +42,8 @@ impl UnifiedStore {
                     builder = builder.with_virtual_hosted_style_request(false);
                 }
 
-                let store = builder.build()
+                let store = builder
+                    .build()
                     .map_err(|e| Error::Storage(format!("Failed to create S3 store: {}", e)))?;
 
                 Ok(Arc::new(store))
@@ -54,14 +55,14 @@ impl UnifiedStore {
             } => {
                 use object_store::gcp::GoogleCloudStorageBuilder;
 
-                let mut builder = GoogleCloudStorageBuilder::new()
-                    .with_bucket_name(&bucket);
+                let mut builder = GoogleCloudStorageBuilder::new().with_bucket_name(&bucket);
 
                 if let Some(sa_path) = service_account_path {
                     builder = builder.with_service_account_path(&sa_path);
                 }
 
-                let store = builder.build()
+                let store = builder
+                    .build()
                     .map_err(|e| Error::Storage(format!("Failed to create GCS store: {}", e)))?;
 
                 Ok(Arc::new(store))
@@ -82,7 +83,8 @@ impl UnifiedStore {
                     builder = builder.with_access_key(&key);
                 }
 
-                let store = builder.build()
+                let store = builder
+                    .build()
                     .map_err(|e| Error::Storage(format!("Failed to create Azure store: {}", e)))?;
 
                 Ok(Arc::new(store))

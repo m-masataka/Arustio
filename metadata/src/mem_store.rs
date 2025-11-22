@@ -1,9 +1,9 @@
 //! Simple in-memory metadata store for testing and development
 
-use common::Result;
-use common::file_metadata::FileMetadata;
 use crate::metadata::{MetadataStore, MountInfo};
 use async_trait::async_trait;
+use common::Result;
+use common::file_metadata::FileMetadata;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
