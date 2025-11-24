@@ -6,7 +6,10 @@ import "google/protobuf/timestamp.proto";
 // API allowing clients to send MetaCmds to the leader
 service MetaApi {
   rpc Apply(MetaCmd) returns (google.protobuf.Empty);
+  // Get the current leader info
   rpc GetLeader (GetLeaderRequest) returns (GetLeaderResponse);
+  // Read Operations
+  rpc GetFileMeta (GetFileMetaRequest) returns (GetFileMetaResponse);
 }
 
 // Container for metadata operations
@@ -123,4 +126,34 @@ message FileMetadata {
   string parent_id = 7;
   // UFS path (actual object storage path)
   string ufs_path = 8;
+}
+
+
+// -----------------------------
+// Read API
+// -----------------------------
+
+// Getfile metadata by full path
+message GetFileMetaRequest {
+  string full_path = 1;
+}
+
+message GetFileMetaResponse {
+  // If not found, either return an empty response or an RPC error, depending on implementation
+  FileMetadata metadata = 1;
+}
+
+// Get list of metadata under a directory
+message ListChildrenRequest {
+  // Full path of the directory
+  string dir_path = 1;
+
+  // Paging parameters can be added if needed:
+  // uint32 limit = 2;
+  // string start_after = 3;
+}
+
+message ListChildrenResponse {
+  // Metadata of immediate child elements (files/directories)
+  repeated FileMetadata children = 1;
 }

@@ -17,7 +17,7 @@ pub fn apply_to_kv(st: &RocksStorage, cmd: MetaCmd) -> Result<()> {
             let val = u64be_bytes(m.inode);
             wb.put_cf(&st.cf_kv, key, val);
         }
-        Some(Op::Load(l)) => {
+        Some(Op::Load(_)) => {
             // TODO
         }
         Some(Op::Mount(m)) => {

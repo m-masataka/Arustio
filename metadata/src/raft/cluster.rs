@@ -4,13 +4,15 @@ use std::sync::atomic::{AtomicU64, Ordering};
 pub struct RaftClusterState {
     pub leader_id: AtomicU64,
     pub term: AtomicU64,
+    pub node_id: AtomicU64,
 }
 
 impl RaftClusterState {
-    pub fn new() -> Self {
+    pub fn new(node_id: u64) -> Self {
         Self {
             leader_id: AtomicU64::new(0),
             term: AtomicU64::new(0),
+            node_id: AtomicU64::new(node_id),
         }
     }
 
@@ -27,5 +29,9 @@ impl RaftClusterState {
             self.leader_id.load(Ordering::Relaxed),
             self.term.load(Ordering::Relaxed),
         )
+    }
+
+    pub fn is_leader(&self) -> bool {
+        self.leader_id.load(Ordering::Relaxed) == self.node_id.load(Ordering::Relaxed)
     }
 }

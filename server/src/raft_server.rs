@@ -7,12 +7,14 @@ use metadata::raft::{
     raft_transport::{GrpcTransport, PeerStore, Transport},
     rocks_store::{KEY_CONF_STATE, RocksStorage},
 };
+use raft::prelude::ReadState;
 use tonic::transport::Server;
 
 use raft::RawNode;
 use raft::default_logger;
 use raft::prelude::Message as RaftMessage;
 use raft::prelude::{ConfChange, ConfChangeV2, Config, EntryType};
+use std::collections::HashMap;
 use std::time::Duration;
 use tokio::sync::mpsc;
 
@@ -23,6 +25,21 @@ use protobuf::Message;
 use raft::prelude::Snapshot;
 use std::sync::Arc;
 use tonic::{Request, Response, Status};
+use tokio::sync::oneshot;
+use uuid::Uuid;
+
+pub enum RaftCommand {
+    Propose(MetaCmd),
+    GetFileMeta {
+        path: String,
+        resp: oneshot::Sender<anyhow::Result<Option<common::meta::FileMetadata>>>,
+    },
+}
+
+struct PendingRead {
+    path: String,
+    resp: oneshot::Sender<anyhow::Result<Option<common::meta::FileMetadata>>>,
+}
 
 pub async fn start_raft_server(
     node_id: u64,
@@ -46,7 +63,7 @@ pub async fn start_raft_server(
     let st = storage.clone();
 
     // Cluster state
-    let cluster_state = Arc::new(RaftClusterState::new());
+    let cluster_state = Arc::new(RaftClusterState::new(node_id));
 
     // Run the bootstrap check and initialization once at startup
     bootstrap_if_needed(&storage, node_cfg.clone())
@@ -58,7 +75,7 @@ pub async fn start_raft_server(
         .map_err(|e| common::Error::Internal(format!("RawNode::new: {e}")))?;
 
     let (net_tx, net_rx) = mpsc::channel::<RaftMessage>(2048);
-    let (prop_tx, prop_rx) = mpsc::channel::<MetaCmd>(1024);
+    let (prop_tx, prop_rx) = mpsc::channel::<RaftCommand>(1024);
     let listen_addr = node_cfg.listen.clone();
 
     // Define PeerStore struct if missing
@@ -98,11 +115,13 @@ pub async fn run_raft_node(
     mut rn: RawNode<RocksStorage>,
     st: RocksStorage,
     mut net_rx: mpsc::Receiver<RaftMessage>,
-    mut prop_rx: mpsc::Receiver<MetaCmd>,
+    mut prop_rx: mpsc::Receiver<RaftCommand>,
     tx: impl Transport,
     cluster_state: Arc<RaftClusterState>,
 ) -> anyhow::Result<()> {
     let mut ticker = tokio::time::interval(Duration::from_millis(100));
+    let mut last_applied: u64 = 0;
+    let mut pending_reads: HashMap<Vec<u8>, PendingRead> = HashMap::new();
 
     loop {
         tokio::select! {
@@ -115,9 +134,21 @@ pub async fn run_raft_node(
                 rn.step(msg)?;
             },
             Some(cmd) = prop_rx.recv()=> {
-                // Package client meta operations (e.g., MkDir/Link) into data and propose them
-                let data = prost::Message::encode_to_vec(&cmd);
-                rn.propose(vec![], data)?;
+                match cmd {
+                    RaftCommand::GetFileMeta { path, resp } => {
+                        // Handle GetFileMeta command
+                        // ctx can be any unique bytes; here we use a UUID
+                        let ctx = Uuid::new_v4().as_bytes().to_vec();
+                        pending_reads.insert(ctx.clone(), PendingRead { path, resp });
+                        // Initiate a read index request
+                        rn.read_index(ctx);
+                    },
+                    RaftCommand::Propose(cmd) => {
+                        // Propose the command to Raft
+                        let data = prost::Message::encode_to_vec(&cmd);
+                        rn.propose(vec![], data)?;
+                    },
+                }
             }
         }
 
@@ -151,8 +182,6 @@ pub async fn run_raft_node(
                 // Apply a received snapshot by replacing the KV DB, then install it on the Raft side
                 apply_snapshot_to_kv(&st, rd.snapshot())?;
             }
-            tracing::debug!("Raft Ready: {:?}", rd);
-            tracing::debug!("Raft Ready Entries: {:?}", rd.entries());
 
             // 2) Send: forward to other nodes
             for m in rd.take_messages() {
@@ -170,7 +199,7 @@ pub async fn run_raft_node(
                 tx.send(m).await?;
             }
 
-            // 3) Apply: feed committed entries to the KV state machine in order
+            // Apply: feed committed entries to the KV state machine in order.
             for ent in rd.take_committed_entries() {
                 match ent.entry_type {
                     EntryType::EntryConfChange => {
@@ -199,9 +228,28 @@ pub async fn run_raft_node(
                         }
                     }
                 }
+                last_applied = ent.index;
             }
 
-            // 4) Advance: inform Raft that Ready handling is complete
+            // Handle read states for linearizable reads
+            for rs in rd.take_read_states() {
+                let ReadState { index, request_ctx } = rs;
+
+                if last_applied >= index {
+                    if let Some(pending) = pending_reads.remove(&request_ctx) {
+                        let PendingRead { path, resp } = pending;
+
+                        let meta = st.get_file_metadata(&path).await?;
+                        let _ = resp.send(Ok(meta));
+                    }
+                } else {
+                    // まだ apply が追いついてない場合は pending_reads に残しておいて、
+                    // 次の Ready でもう一度チェックする戦略でも OK
+                }
+            }
+
+
+            // Advance: inform Raft that Ready handling is complete
             let mut light_rd = rn.advance(rd);
             tracing::debug!("Advanced Raft node, LightReady: {:?}", light_rd);
             for m in light_rd.take_messages() {
@@ -238,6 +286,7 @@ pub async fn run_raft_node(
                         }
                     }
                 }
+                last_applied = ent.index;
             }
         }
 
@@ -385,7 +434,7 @@ impl raftio::raft_server::Raft for RaftService {
 pub async fn start_raft_grpc_server(
     listen: &str,
     net_tx: mpsc::Sender<RaftMessage>,
-    prop_tx: mpsc::Sender<MetaCmd>,
+    prop_tx: mpsc::Sender<RaftCommand>,
     cluster_state: Arc<RaftClusterState>,
     peer_store: PeerStore,
 ) -> anyhow::Result<()> {
@@ -405,14 +454,14 @@ pub async fn start_raft_grpc_server(
 
 // MetadataService
 pub struct MetaService {
-    prop_tx: mpsc::Sender<MetaCmd>,
+    prop_tx: mpsc::Sender<RaftCommand>,
     cluster_state: Arc<RaftClusterState>,
     peer_store: PeerStore,
 }
 
 impl MetaService {
     pub fn new(
-        prop_tx: mpsc::Sender<MetaCmd>,
+        prop_tx: mpsc::Sender<RaftCommand>,
         cluster_state: Arc<RaftClusterState>,
         peer_store: PeerStore,
     ) -> Self {
@@ -430,7 +479,7 @@ impl meta_api_server::MetaApi for MetaService {
         let cmd = req.into_inner();
 
         self.prop_tx
-            .send(cmd)
+            .send(RaftCommand::Propose(cmd))
             .await
             .map_err(|_| Status::unavailable("Raft node not ready"))?;
 
@@ -450,6 +499,35 @@ impl meta_api_server::MetaApi for MetaService {
             leader_ip,
         };
 
+        Ok(Response::new(response))
+    }
+
+    async fn get_file_meta(
+        &self,
+        req: Request<common::meta::GetFileMetaRequest>,
+    ) -> std::result::Result<Response<common::meta::GetFileMetaResponse>, Status> {
+        let path = req.into_inner().full_path;
+        if !self.cluster_state.is_leader() {
+            // if not leader, return error
+            return Err(Status::failed_precondition("not leader"));
+        }
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.prop_tx
+            .send(RaftCommand::GetFileMeta {
+                path,
+                resp: tx,
+            })
+            .await
+            .map_err(|_| Status::unavailable("Raft node not ready"))?;
+
+        let meta_opt = rx
+            .await
+            .map_err(|_| Status::internal("failed to receive response"))?
+            .map_err(|e| Status::internal(format!("failed to get file meta: {}", e)))?;
+
+        let response = common::meta::GetFileMetaResponse {
+            metadata: meta_opt,
+        };
         Ok(Response::new(response))
     }
 }

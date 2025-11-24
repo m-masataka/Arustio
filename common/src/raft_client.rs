@@ -3,6 +3,9 @@ use crate::meta::{
     GetLeaderRequest, // Add this import
     MetaCmd,
     meta_api_client::MetaApiClient,
+    FileMetadata,
+    GetFileMetaRequest,
+    GetFileMetaResponse,
 };
 
 #[derive(Clone)]
@@ -38,5 +41,23 @@ impl RaftClient {
         let response = client.apply(request).await?;
         tracing::info!("Command applied: {:?}", response.into_inner());
         Ok(())
+    }
+
+    pub async fn get_file_metadata(
+        &self,
+        path: String,
+    ) -> Result<Option<FileMetadata>, Box<dyn std::error::Error>> {
+        let leader_address = self.get_leader_address().await?;
+        tracing::info!("Leader address: {}", leader_address);
+        let dst_url = format!("http://{}", leader_address);
+        tracing::info!("Connecting to leader at: {}", dst_url);
+        let mut client = MetaApiClient::connect(dst_url).await?;
+
+        let request = tonic::Request::new(GetFileMetaRequest {
+            full_path: path,
+        });
+        let response = client.get_file_meta(request).await?;
+        let file_meta_response = response.into_inner();
+        Ok(file_meta_response.metadata)
     }
 }

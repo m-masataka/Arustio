@@ -6,6 +6,8 @@ use raft::{Error as RaftError, Result as RaftResult, Storage};
 use rocksdb::{ColumnFamilyDescriptor, DBWithThreadMode, MultiThreaded, Options, WriteBatch};
 use std::sync::Arc;
 
+use crate::utils::kv_key_path;
+
 const CF_RAFT_LOG: &str = "raft_log";
 const CF_RAFT_STATE: &str = "raft_state";
 const CF_KV: &str = "kv";
@@ -159,6 +161,21 @@ impl RocksStorage {
         let result = self.db.get_cf(&self.cf_kv, key_bytes)?;
         Ok(result.map(|v| v.to_vec()))
     }
+
+    // Get FileMetadata for given path from KV CF
+    pub async fn get_file_metadata(&self, path: &str) -> Result<Option<common::meta::FileMetadata>> {
+        let key_bytes = kv_key_path(path);
+        if let Some(value) = self.get_kv_value(&key_bytes)? {
+            let file_metadata: common::meta::FileMetadata =
+                prost::Message::decode(value.as_slice()).map_err(|e| {
+                    common::Error::Internal(format!("Failed to decode FileMetadata entry: {}", e))
+                })?;
+            Ok(Some(file_metadata))
+        } else {
+            Ok(None)
+        }
+    }
+
 }
 
 // ---- Storage trait implementation (used by Raft for reads) ----

@@ -2,7 +2,7 @@
 
 use crate::metadata::{MetadataStore, MountInfo};
 use async_trait::async_trait;
-use common::Result;
+use common::{Result, file};
 use common::file_metadata::FileMetadata;
 use std::sync::Arc;
 use ufs::UfsConfig;
@@ -32,21 +32,13 @@ impl RaftMetadataStore {
 #[async_trait]
 impl MetadataStore for RaftMetadataStore {
     async fn get(&self, path: &str) -> Result<Option<FileMetadata>> {
-        let key = format!(
-            "{}{}",
-            std::str::from_utf8(PATH_PREFIX).expect("PATH_PREFIX must be valid UTF-8"),
-            path
-        );
-        let value = self
-            .local_db
-            .get_kv_value(key.as_bytes())
-            .map_err(|e| common::Error::Internal(format!("Failed to list mount keys: {}", e)))?;
-        if let Some(value) = value {
-            let file_metadata: common::meta::FileMetadata =
-                prost::Message::decode(value.as_slice()).map_err(|e| {
-                    common::Error::Internal(format!("Failed to decode FileMetadata entry: {}", e))
-                })?;
-            let metadata = FileMetadata::try_from(file_metadata).map_err(|e| {
+        let file_meta_opt = self.raft_client
+            .get_file_metadata(path.to_string())
+            .await
+            .map_err(|e| common::Error::Internal(format!("Failed to get file metadata: {}", e)))?;
+
+        if let Some(file_meta_proto) = file_meta_opt {
+            let metadata = FileMetadata::try_from(file_meta_proto).map_err(|e| {
                 common::Error::Internal(format!("Failed to convert FileMetadata: {}", e))
             })?;
             tracing::info!("Got FileMetadata for path {}: {:?}", path, metadata);
@@ -85,7 +77,7 @@ impl MetadataStore for RaftMetadataStore {
         Ok(vec![])
     }
 
-    async fn get_by_id(&self, id: &Uuid) -> Result<Option<FileMetadata>> {
+    async fn get_by_id(&self, _id: &Uuid) -> Result<Option<FileMetadata>> {
         Ok(None)
     }
 
@@ -104,10 +96,10 @@ impl MetadataStore for RaftMetadataStore {
         Ok(())
     }
 
-    async fn get_mount(&self, path: &str) -> Result<Option<MountInfo>> {
+    async fn get_mount(&self, _path: &str) -> Result<Option<MountInfo>> {
         Ok(None)
     }
-    async fn delete_mount(&self, path: &str) -> Result<()> {
+    async fn delete_mount(&self, _path: &str) -> Result<()> {
         Ok(())
     }
 
