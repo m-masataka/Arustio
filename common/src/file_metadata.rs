@@ -62,7 +62,12 @@ impl FileMetadata {
         }
     }
 
-    pub fn new_file(path: String, size: u64, parent_id: Option<Uuid>, ufs_path: String) -> Self {
+    pub fn new_file(
+        path: String,
+        size: u64,
+        parent_id: Option<Uuid>,
+        ufs_path: Option<String>,
+    ) -> Self {
         let now = Utc::now();
         Self {
             id: Uuid::new_v4(),
@@ -72,7 +77,7 @@ impl FileMetadata {
             created_at: now,
             modified_at: now,
             parent_id,
-            ufs_path: Some(ufs_path),
+            ufs_path,
         }
     }
 

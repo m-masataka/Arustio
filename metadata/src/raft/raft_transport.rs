@@ -24,13 +24,6 @@ impl PeerStore {
     async fn resolve(&self, id: u64) -> Option<String> {
         self.map.read().await.get(&id).cloned()
     }
-    async fn upsert(&self, id: u64, addr: String) {
-        self.map.write().await.insert(id, addr);
-    }
-    async fn remove(&self, id: u64) {
-        self.map.write().await.remove(&id);
-    }
-
     pub async fn get_peer_ip(&self, id: u64) -> String {
         match self.resolve(id).await {
             Some(addr) => addr,
