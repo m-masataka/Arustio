@@ -4,7 +4,7 @@ mod raft_server;
 use clap::Parser;
 use common::{NodeConfig, Result};
 use std::{net::SocketAddr, sync::Arc};
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, mpsc};
 use tonic::transport::Server;
 use vfs::{FileSystem, VirtualFsWithMounts};
 
@@ -12,6 +12,7 @@ use common::raft_client::RaftClient;
 use grpc_server::{ArustioFileService, ArustioMountService};
 use metadata::RocksMetadataStore;
 use metadata::metadata::MetadataStore;
+use metadata::raft::linearizable_read::LinearizableReadHandle;
 use metadata::raft::raft_store::RaftMetadataStore;
 use metadata::raft::rocks_store::RocksStorage;
 use raft_server::start_raft_server;
@@ -82,9 +83,15 @@ async fn main() -> Result<()> {
     if args.raft {
         let storage = RocksStorage::open(&data_dir)
             .map_err(|e| common::Error::Internal(format!("RocksStorage::open: {e}")))?;
-        let raft_client = RaftClient::new().await;
-        let metadata: Arc<dyn MetadataStore> =
-            Arc::new(RaftMetadataStore::new(raft_client, storage.clone()));
+        let bootstrap_addr = format!("http://{}", node_cfg.listen);
+        let raft_client = RaftClient::new(bootstrap_addr);
+        let (read_tx, read_rx) = mpsc::channel(128);
+        let linearizer = LinearizableReadHandle::new(read_tx);
+        let metadata: Arc<dyn MetadataStore> = Arc::new(RaftMetadataStore::new(
+            raft_client,
+            storage.clone(),
+            linearizer.clone(),
+        ));
 
         let grpc_metadata = metadata.clone();
         tokio::spawn(async move {
@@ -93,7 +100,7 @@ async fn main() -> Result<()> {
             }
         });
 
-        start_raft_server(node_id, node_cfg, storage).await?;
+        start_raft_server(node_id, node_cfg, storage, read_rx, linearizer).await?;
     } else {
         let metadata: Arc<dyn MetadataStore> = Arc::new(
             RocksMetadataStore::open(&data_dir)

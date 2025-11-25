@@ -1,50 +1,63 @@
-use common::NodeConfig;
-use common::Result;
 use common::meta::MetaCmd;
 use common::meta::meta_api_server;
-use metadata::raft::{
-    cluster::RaftClusterState,
-    raft_transport::{GrpcTransport, PeerStore, Transport},
-    rocks_store::{KEY_CONF_STATE, RocksStorage},
-};
-use raft::prelude::ReadState;
-use tonic::transport::Server;
-
-use raft::RawNode;
-use raft::default_logger;
-use raft::prelude::Message as RaftMessage;
-use raft::prelude::{ConfChange, ConfChangeV2, Config, EntryType};
-use std::collections::HashMap;
-use std::time::Duration;
-use tokio::sync::mpsc;
-
 use common::raftio;
+use common::{Error, NodeConfig, Result};
 use metadata::raft::apply::apply_to_kv;
+use metadata::raft::cluster::RaftClusterState;
+use metadata::raft::linearizable_read::{LinearizableReadHandle, LinearizableReadRequest};
+use metadata::raft::raft_transport::{GrpcTransport, PeerStore, Transport};
+use metadata::raft::rocks_store::{KEY_CONF_STATE, RocksStorage};
 use protobuf::CodedInputStream;
 use protobuf::Message;
+use raft::default_logger;
+use raft::prelude::Message as RaftMessage;
 use raft::prelude::Snapshot;
+use raft::prelude::{ConfChange, ConfChangeV2, Config, EntryType, ReadState};
+use raft::{RawNode, StateRole};
+use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
+use tokio::sync::mpsc;
+use tonic::transport::Server;
 use tonic::{Request, Response, Status};
-use tokio::sync::oneshot;
-use uuid::Uuid;
 
-pub enum RaftCommand {
-    Propose(MetaCmd),
-    GetFileMeta {
-        path: String,
-        resp: oneshot::Sender<anyhow::Result<Option<common::meta::FileMetadata>>>,
-    },
+struct PendingLinearizableRead {
+    request: LinearizableReadRequest,
+    read_index: Option<u64>,
 }
 
-struct PendingRead {
-    path: String,
-    resp: oneshot::Sender<anyhow::Result<Option<common::meta::FileMetadata>>>,
+fn try_complete_reads(pending: &mut HashMap<Vec<u8>, PendingLinearizableRead>, applied_index: u64) {
+    let ready: Vec<Vec<u8>> = pending
+        .iter()
+        .filter_map(|(ctx, entry)| {
+            entry
+                .read_index
+                .filter(|idx| applied_index >= *idx)
+                .map(|_| ctx.clone())
+        })
+        .collect();
+    for ctx in ready {
+        if let Some(entry) = pending.remove(&ctx) {
+            let _ = entry.request.completion.send(Ok(()));
+        }
+    }
+}
+
+fn fail_pending_reads(pending: &mut HashMap<Vec<u8>, PendingLinearizableRead>, message: &str) {
+    for (_, entry) in pending.drain() {
+        let _ = entry
+            .request
+            .completion
+            .send(Err(Error::Internal(message.to_string())));
+    }
 }
 
 pub async fn start_raft_server(
     node_id: u64,
     node_cfg: NodeConfig,
     storage: RocksStorage,
+    read_rx: mpsc::Receiver<LinearizableReadRequest>,
+    read_handle: LinearizableReadHandle,
 ) -> Result<()> {
     // Raft starting
     let cfg = Config {
@@ -61,6 +74,8 @@ pub async fn start_raft_server(
         .map_err(|e| common::Error::Internal(format!("Raft Config validate: {e}")))?;
 
     let st = storage.clone();
+    let grpc_storage = st.clone();
+    let read_handle_for_service = read_handle.clone();
 
     // Cluster state
     let cluster_state = Arc::new(RaftClusterState::new(node_id));
@@ -75,7 +90,7 @@ pub async fn start_raft_server(
         .map_err(|e| common::Error::Internal(format!("RawNode::new: {e}")))?;
 
     let (net_tx, net_rx) = mpsc::channel::<RaftMessage>(2048);
-    let (prop_tx, prop_rx) = mpsc::channel::<RaftCommand>(1024);
+    let (prop_tx, prop_rx) = mpsc::channel::<MetaCmd>(1024);
     let listen_addr = node_cfg.listen.clone();
 
     // Define PeerStore struct if missing
@@ -92,6 +107,8 @@ pub async fn start_raft_server(
         let prop_tx = prop_tx.clone();
         let cluster_state = cluster_state.clone();
         let peer_store = peer_store.clone();
+        let storage = grpc_storage.clone();
+        let read_handle = read_handle_for_service.clone();
         async move {
             let _ = start_raft_grpc_server(
                 &listen_addr,
@@ -99,13 +116,15 @@ pub async fn start_raft_server(
                 prop_tx,
                 cluster_state,
                 peer_store.clone(),
+                read_handle,
+                storage,
             )
             .await;
         }
     });
 
     let tx = GrpcTransport::new(node_id, peer_store, net_tx.clone());
-    run_raft_node(rn, st, net_rx, prop_rx, tx, cluster_state)
+    run_raft_node(rn, st, net_rx, prop_rx, read_rx, tx, cluster_state)
         .await
         .map_err(|e| common::Error::Internal(format!("run_raft_node: {e}")))?;
     Ok(())
@@ -115,13 +134,15 @@ pub async fn run_raft_node(
     mut rn: RawNode<RocksStorage>,
     st: RocksStorage,
     mut net_rx: mpsc::Receiver<RaftMessage>,
-    mut prop_rx: mpsc::Receiver<RaftCommand>,
+    mut prop_rx: mpsc::Receiver<MetaCmd>,
+    mut read_rx: mpsc::Receiver<LinearizableReadRequest>,
     tx: impl Transport,
     cluster_state: Arc<RaftClusterState>,
 ) -> anyhow::Result<()> {
     let mut ticker = tokio::time::interval(Duration::from_millis(100));
     let mut last_applied: u64 = 0;
-    let mut pending_reads: HashMap<Vec<u8>, PendingRead> = HashMap::new();
+    let mut pending_reads: HashMap<Vec<u8>, PendingLinearizableRead> = HashMap::new();
+    let mut next_read_ctx: u64 = 1;
 
     loop {
         tokio::select! {
@@ -134,21 +155,20 @@ pub async fn run_raft_node(
                 rn.step(msg)?;
             },
             Some(cmd) = prop_rx.recv()=> {
-                match cmd {
-                    RaftCommand::GetFileMeta { path, resp } => {
-                        // Handle GetFileMeta command
-                        // ctx can be any unique bytes; here we use a UUID
-                        let ctx = Uuid::new_v4().as_bytes().to_vec();
-                        pending_reads.insert(ctx.clone(), PendingRead { path, resp });
-                        // Initiate a read index request
-                        rn.read_index(ctx);
+                let data = prost::Message::encode_to_vec(&cmd);
+                rn.propose(vec![], data)?;
+            }
+            Some(read_req) = read_rx.recv() => {
+                let ctx = next_read_ctx.to_be_bytes().to_vec();
+                next_read_ctx = next_read_ctx.wrapping_add(1);
+                pending_reads.insert(
+                    ctx.clone(),
+                    PendingLinearizableRead {
+                        request: read_req,
+                        read_index: None,
                     },
-                    RaftCommand::Propose(cmd) => {
-                        // Propose the command to Raft
-                        let data = prost::Message::encode_to_vec(&cmd);
-                        rn.propose(vec![], data)?;
-                    },
-                }
+                );
+                rn.read_index(ctx);
             }
         }
 
@@ -163,6 +183,9 @@ pub async fn run_raft_node(
                     ss.raft_state
                 );
                 cluster_state.set_leader(ss.leader_id);
+                if ss.raft_state != StateRole::Leader {
+                    fail_pending_reads(&mut pending_reads, "node stepped down from leader role");
+                }
             }
             // 1) Persist: always save HardState / Entries / received Snapshots first
             if let Some(hs) = rd.hs().cloned() {
@@ -229,25 +252,18 @@ pub async fn run_raft_node(
                     }
                 }
                 last_applied = ent.index;
+                try_complete_reads(&mut pending_reads, last_applied);
             }
 
             // Handle read states for linearizable reads
-            for rs in rd.take_read_states() {
-                let ReadState { index, request_ctx } = rs;
-
-                if last_applied >= index {
-                    if let Some(pending) = pending_reads.remove(&request_ctx) {
-                        let PendingRead { path, resp } = pending;
-
-                        let meta = st.get_file_metadata(&path).await?;
-                        let _ = resp.send(Ok(meta));
-                    }
+            for ReadState { index, request_ctx } in rd.take_read_states() {
+                if let Some(pending) = pending_reads.get_mut(&request_ctx) {
+                    pending.read_index = Some(index);
                 } else {
-                    // まだ apply が追いついてない場合は pending_reads に残しておいて、
-                    // 次の Ready でもう一度チェックする戦略でも OK
+                    tracing::warn!("Unknown read context received len={}", request_ctx.len());
                 }
             }
-
+            try_complete_reads(&mut pending_reads, last_applied);
 
             // Advance: inform Raft that Ready handling is complete
             let mut light_rd = rn.advance(rd);
@@ -287,6 +303,7 @@ pub async fn run_raft_node(
                     }
                 }
                 last_applied = ent.index;
+                try_complete_reads(&mut pending_reads, last_applied);
             }
         }
 
@@ -434,9 +451,11 @@ impl raftio::raft_server::Raft for RaftService {
 pub async fn start_raft_grpc_server(
     listen: &str,
     net_tx: mpsc::Sender<RaftMessage>,
-    prop_tx: mpsc::Sender<RaftCommand>,
+    prop_tx: mpsc::Sender<MetaCmd>,
     cluster_state: Arc<RaftClusterState>,
     peer_store: PeerStore,
+    read_handle: LinearizableReadHandle,
+    storage: RocksStorage,
 ) -> anyhow::Result<()> {
     Server::builder()
         .add_service(raftio::raft_server::RaftServer::new(RaftService::new(
@@ -446,6 +465,8 @@ pub async fn start_raft_grpc_server(
             prop_tx,
             cluster_state.clone(),
             peer_store.clone(),
+            read_handle,
+            storage,
         )))
         .serve(listen.parse()?)
         .await?;
@@ -454,21 +475,27 @@ pub async fn start_raft_grpc_server(
 
 // MetadataService
 pub struct MetaService {
-    prop_tx: mpsc::Sender<RaftCommand>,
+    prop_tx: mpsc::Sender<MetaCmd>,
     cluster_state: Arc<RaftClusterState>,
     peer_store: PeerStore,
+    read_handle: LinearizableReadHandle,
+    storage: RocksStorage,
 }
 
 impl MetaService {
     pub fn new(
-        prop_tx: mpsc::Sender<RaftCommand>,
+        prop_tx: mpsc::Sender<MetaCmd>,
         cluster_state: Arc<RaftClusterState>,
         peer_store: PeerStore,
+        read_handle: LinearizableReadHandle,
+        storage: RocksStorage,
     ) -> Self {
         Self {
             prop_tx,
             cluster_state,
             peer_store,
+            read_handle,
+            storage,
         }
     }
 }
@@ -479,7 +506,7 @@ impl meta_api_server::MetaApi for MetaService {
         let cmd = req.into_inner();
 
         self.prop_tx
-            .send(RaftCommand::Propose(cmd))
+            .send(cmd)
             .await
             .map_err(|_| Status::unavailable("Raft node not ready"))?;
 
@@ -511,23 +538,17 @@ impl meta_api_server::MetaApi for MetaService {
             // if not leader, return error
             return Err(Status::failed_precondition("not leader"));
         }
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        self.prop_tx
-            .send(RaftCommand::GetFileMeta {
-                path,
-                resp: tx,
-            })
+        self.read_handle
+            .wait()
             .await
-            .map_err(|_| Status::unavailable("Raft node not ready"))?;
-
-        let meta_opt = rx
+            .map_err(|e| Status::internal(format!("read barrier failed: {}", e)))?;
+        let meta_opt = self
+            .storage
+            .get_file_metadata(&path)
             .await
-            .map_err(|_| Status::internal("failed to receive response"))?
             .map_err(|e| Status::internal(format!("failed to get file meta: {}", e)))?;
 
-        let response = common::meta::GetFileMetaResponse {
-            metadata: meta_opt,
-        };
+        let response = common::meta::GetFileMetaResponse { metadata: meta_opt };
         Ok(Response::new(response))
     }
 }

@@ -1,12 +1,10 @@
 // create client class
 use crate::meta::{
-    GetLeaderRequest, // Add this import
-    MetaCmd,
-    meta_api_client::MetaApiClient,
-    FileMetadata,
-    GetFileMetaRequest,
-    GetFileMetaResponse,
+    FileMetadata, GetFileMetaRequest, GetLeaderRequest, MetaCmd, meta_api_client::MetaApiClient,
 };
+use std::io;
+use std::time::Duration;
+use tokio::time::sleep;
 
 #[derive(Clone)]
 pub struct RaftClient {
@@ -14,19 +12,23 @@ pub struct RaftClient {
 }
 
 impl RaftClient {
-    pub async fn new() -> Self {
+    pub fn new<S: Into<String>>(bootstrap_address: S) -> Self {
         Self {
-            bootstrap_address: "http://localhost:50051".to_string(),
+            bootstrap_address: bootstrap_address.into(),
         }
     }
 
     pub async fn get_leader_address(&self) -> Result<String, Box<dyn std::error::Error>> {
-        // In a real implementation, you would query the cluster for the current leader.
-        // Get the leader node id
-        let mut client = MetaApiClient::connect(self.bootstrap_address.clone()).await?;
+        let mut client = self.bootstrap_client().await?;
         let request = tonic::Request::new(GetLeaderRequest {});
         let response = client.get_leader(request).await?;
         let leader_info = response.into_inner();
+        if leader_info.leader_id == 0
+            || leader_info.leader_ip.is_empty()
+            || leader_info.leader_ip == "unknown"
+        {
+            return Err(io::Error::new(io::ErrorKind::Other, "Leader is not available yet").into());
+        }
         Ok(leader_info.leader_ip)
     }
 
@@ -53,11 +55,31 @@ impl RaftClient {
         tracing::info!("Connecting to leader at: {}", dst_url);
         let mut client = MetaApiClient::connect(dst_url).await?;
 
-        let request = tonic::Request::new(GetFileMetaRequest {
-            full_path: path,
-        });
+        let request = tonic::Request::new(GetFileMetaRequest { full_path: path });
         let response = client.get_file_meta(request).await?;
         let file_meta_response = response.into_inner();
         Ok(file_meta_response.metadata)
+    }
+
+    async fn bootstrap_client(
+        &self,
+    ) -> Result<MetaApiClient<tonic::transport::Channel>, Box<dyn std::error::Error>> {
+        let mut attempts = 0;
+        loop {
+            match MetaApiClient::connect(self.bootstrap_address.clone()).await {
+                Ok(client) => return Ok(client),
+                Err(e) if attempts < 3 => {
+                    attempts += 1;
+                    tracing::warn!(
+                        "Failed to connect to bootstrap {} (attempt {}): {}",
+                        self.bootstrap_address,
+                        attempts,
+                        e
+                    );
+                    sleep(Duration::from_millis(200 * attempts)).await;
+                }
+                Err(e) => return Err(Box::new(e)),
+            }
+        }
     }
 }

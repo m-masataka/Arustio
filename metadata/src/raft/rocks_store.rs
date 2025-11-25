@@ -163,7 +163,10 @@ impl RocksStorage {
     }
 
     // Get FileMetadata for given path from KV CF
-    pub async fn get_file_metadata(&self, path: &str) -> Result<Option<common::meta::FileMetadata>> {
+    pub async fn get_file_metadata(
+        &self,
+        path: &str,
+    ) -> Result<Option<common::meta::FileMetadata>> {
         let key_bytes = kv_key_path(path);
         if let Some(value) = self.get_kv_value(&key_bytes)? {
             let file_metadata: common::meta::FileMetadata =
@@ -175,7 +178,6 @@ impl RocksStorage {
             Ok(None)
         }
     }
-
 }
 
 // ---- Storage trait implementation (used by Raft for reads) ----

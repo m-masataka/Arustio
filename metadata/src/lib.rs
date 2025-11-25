@@ -9,15 +9,16 @@
 
 pub mod mem_store;
 pub mod metadata;
-pub mod rocks;
-pub mod utils;
 pub mod raft {
     pub mod apply;
     pub mod cluster;
+    pub mod linearizable_read;
     pub mod raft_store;
     pub mod raft_transport;
     pub mod rocks_store;
 }
+pub mod rocks;
+pub mod utils;
 
 pub use mem_store::InMemoryMetadataStore;
 pub use rocks::RocksMetadataStore;
