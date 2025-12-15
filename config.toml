@@ -1,6 +1,7 @@
 self_id = 1
 listen = "0.0.0.0:50051"
 fs_listen = "0.0.0.0:50052"
+cache_listen = "0.0.0.0:50053"
 
 [[peers]]
 id = 1

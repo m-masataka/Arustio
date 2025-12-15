@@ -20,6 +20,7 @@ tonic = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 chrono = { workspace = true }
+fmt = "0.1.0"
 
 common = { path = "../common" }
 ufs = { path = "../ufs" }

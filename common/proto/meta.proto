@@ -10,6 +10,8 @@ service MetaApi {
   rpc GetLeader (GetLeaderRequest) returns (GetLeaderResponse);
   // Read Operations
   rpc GetFileMeta (GetFileMetaRequest) returns (GetFileMetaResponse);
+  // Get the cache node list
+  rpc GetCacheNodes (GetCacheNodesRequest) returns (GetCacheNodesResponse);
 }
 
 // Container for metadata operations
@@ -20,6 +22,14 @@ message MetaCmd {
     Mount   mount   = 3;
     Unmount unmount = 4;
     PutFileMeta put_file_meta = 5;
+
+    // ---- Cache Node Management Command ----
+    AddCacheNode add_cache_node = 6;
+    RemoveCacheNode remove_cache_node = 7;
+    UpdateCacheNodeStatus update_cache_node_status = 8;
+
+    // ---- Cache Metadata Management Command ----
+    PutCacheMeta put_cache_meta = 20;
   }
 }
 
@@ -126,8 +136,16 @@ message FileMetadata {
   string parent_id = 7;
   // UFS path (actual object storage path)
   string ufs_path = 8;
+  // List of data blocks
+  repeated BlockDesc blocks = 9;
 }
 
+message BlockDesc {
+  uint64 index = 1;
+  uint32 size = 2;
+  uint64 range_start = 3;
+  uint64 range_end = 4;
+}
 
 // -----------------------------
 // Read API
@@ -156,4 +174,61 @@ message ListChildrenRequest {
 message ListChildrenResponse {
   // Metadata of immediate child elements (files/directories)
   repeated FileMetadata children = 1;
+}
+
+
+// -----------------------------
+// Cache Node Management Messages
+// -----------------------------
+message AddCacheNode {
+  CacheNodeInfo node = 1;
+}
+
+message RemoveCacheNode {
+  string node_id = 1;
+}
+
+message UpdateCacheNodeStatus {
+  string node_id = 1;
+  CacheNodeStatus status = 2;
+  google.protobuf.Timestamp last_heartbeat = 3;
+}
+
+enum CacheNodeStatus {
+  CACHE_NODE_STATUS_UNSPECIFIED = 0;
+  CACHE_NODE_UP       = 1;  // healthy
+  CACHE_NODE_DRAINING = 2;  // not accepting new requests, draining existing ones
+  CACHE_NODE_DOWN     = 3;  // considered dead
+}
+
+message CacheNodeInfo {
+  // Node ID (can be UUID or simple sequence number)
+  string node_id = 1;
+  // Network location
+  string url = 2;
+
+  // Load balancing weight (optional)
+  uint32 weight = 3;
+
+  CacheNodeStatus status = 4;
+
+  // Management metadata
+  google.protobuf.Timestamp last_heartbeat = 5;
+  string zone = 6;       // AZ or DC information (if any)
+  string description = 7;
+}
+
+message GetCacheNodesRequest {
+}
+message GetCacheNodesResponse {
+  repeated CacheNodeInfo nodes = 1;
+}
+
+// -----------------------------
+// Cache Metadata Management Messages
+// -----------------------------
+message PutCacheMeta {
+  string file_id = 1;
+  uint64 index = 2;
+  string node_id = 3;
 }

@@ -1,22 +1,46 @@
 //! Virtual File System with mount support
 
 use crate::FileSystem;
+use crate::block_accessor::BlockAccessor;
+use crate::cache::manager::CacheManager;
+use async_stream::try_stream;
 use async_trait::async_trait;
-use bytes::Bytes;
-use common::{Error, Result, file_metadata::FileMetadata, file_metadata::FileStatus};
+use bytes::{Bytes, BytesMut};
+use common::file_client::FileClient;
+use common::{
+    Error, Result,
+    file_metadata::{BlockDesc, FileMetadata},
+};
+
+use futures::{
+    StreamExt,
+    stream::{self, BoxStream},
+};
 use metadata::metadata::{MetadataStore, MountInfo};
 use std::sync::Arc;
 use ufs::{Ufs, UfsConfig, UfsOperations};
 
 /// Virtual File System with mount table support
-pub struct VirtualFsWithMounts {
+pub struct VirtualFileSystem {
     metadata: Arc<dyn MetadataStore>,
+    block_accessor: Arc<BlockAccessor>,
+    cache: Arc<CacheManager>,
+    file_client: FileClient,
 }
 
-impl VirtualFsWithMounts {
+impl VirtualFileSystem {
     /// Create a new Virtual File System with mount support
-    pub fn new(metadata: Arc<dyn MetadataStore>) -> Self {
-        Self { metadata }
+    pub fn new(
+        metadata: Arc<dyn MetadataStore>,
+        block_accessor: Arc<BlockAccessor>,
+        cache: Arc<CacheManager>,
+    ) -> Self {
+        Self {
+            metadata,
+            block_accessor,
+            cache,
+            file_client: FileClient::new(),
+        }
     }
 
     /// Restore mounts from metadata store
@@ -63,7 +87,7 @@ impl VirtualFsWithMounts {
                 }
             }
         }
-        tracing::info!("Mount path for {}: {}", path, mount_path);
+        tracing::debug!("Mount path for {}: {}", path, mount_path);
 
         Ok((ufs, relative_path, mount_path))
     }
@@ -85,7 +109,6 @@ impl VirtualFsWithMounts {
                 }
             }
         }
-        
 
         // Check if directory or file exists at the mount point
         {
@@ -133,10 +156,10 @@ impl VirtualFsWithMounts {
     /// Resolve a VFS path to its mount point and relative path
     /// Returns (UFS instance, relative path within the UFS)
     pub async fn resolve(&self, vfs_path: &str) -> Result<(Arc<Ufs>, String)> {
-        tracing::info!("Resolving VFS path: {}", vfs_path);
+        tracing::debug!("Resolving VFS path: {}", vfs_path);
         let normalized_path = common::normalize_path(vfs_path)?;
         let mounts = self.metadata.list_mounts().await?;
-        tracing::info!("Available mounts: {:?}", mounts);
+        tracing::debug!("Available mounts: {:?}", mounts);
 
         // Find the longest matching mount point
         let mut best_match: Option<(&String, UfsConfig)> = None;
@@ -177,7 +200,7 @@ impl VirtualFsWithMounts {
 }
 
 #[async_trait]
-impl FileSystem for VirtualFsWithMounts {
+impl FileSystem for VirtualFileSystem {
     async fn mkdir(&self, path: &str) -> Result<()> {
         let normalized_path = common::normalize_path(path)?;
 
@@ -185,7 +208,7 @@ impl FileSystem for VirtualFsWithMounts {
         if self.metadata.get(&normalized_path).await?.is_some() {
             return Err(Error::PathAlreadyExists(normalized_path));
         }
-        
+
         // Create root directory if not exists
         let root_path = "/";
         if self.metadata.get(&root_path).await?.is_none() {
@@ -217,93 +240,231 @@ impl FileSystem for VirtualFsWithMounts {
         Ok(())
     }
 
-    async fn create(&self, path: &str, data: Bytes) -> Result<()> {
+    async fn read(&self, path: &str) -> Result<(FileMetadata, BoxStream<'static, Result<Bytes>>)> {
         let normalized_path = common::normalize_path(path)?;
 
-        // Check if already exists
-        if self.metadata.get(&normalized_path).await?.is_some() {
-            return Err(Error::PathAlreadyExists(normalized_path));
-        }
-
-        // Get parent directory
-        let parent_path = common::parent_path(&normalized_path)
-            .ok_or_else(|| Error::InvalidPath("Cannot create file at root".to_string()))?;
-
-        let parent = self
-            .metadata
-            .get(&parent_path)
-            .await?
-            .ok_or_else(|| Error::PathNotFound(parent_path.clone()))?;
-
-        if !parent.is_directory() {
-            return Err(Error::NotADirectory(parent_path));
-        }
-
-        // Resolve to mount point
-        match self.get_mount_for_path(&normalized_path).await {
-            Ok((ufs, _relative_path, mount_path)) => {
-                // Generate UFS path from VFS path (maps directly to S3/MinIO path)
-                let ufs_path = self.generate_ufs_path(&normalized_path, &mount_path);
-
-                // TODO: DELETE THIS LOG
-                tracing::info!("Creating file at VFS path");
-
-                // Write data to UFS
-                ufs.write(&ufs_path, data.clone()).await?;
-
-                // Create file metadata
-                let metadata = FileMetadata::new_file(
-                    normalized_path,
-                    data.len() as u64,
-                    Some(parent.id),
-                    Some(ufs_path),
-                );
-                self.metadata.put(metadata).await?;
-
-                // TODO: DELETE THIS LOG
-                tracing::info!("Finished creating file at VFS path");
-                Ok(())
+        if let Some(metadata) = self.metadata.get(&normalized_path).await? {
+            if !metadata.is_file() {
+                return Err(Error::NotAFile(normalized_path));
             }
-            Err(Error::PathNotFound(_)) => {
-                // No mount for this path: store metadata only
-                tracing::warn!(
-                    "No mount found for {}, storing metadata without backing UFS data",
-                    normalized_path
-                );
-                let metadata = FileMetadata::new_file(
-                    normalized_path,
-                    data.len() as u64,
-                    Some(parent.id),
-                    None,
-                );
-                self.metadata.put(metadata).await?;
-                Ok(())
+
+            tracing::debug!("Attempting to read file {} from cache", normalized_path);
+            let blocks = self.block_accessor.plan_chunk_layout(metadata.size).await;
+
+            let blocks_nodes = self
+                .block_accessor
+                .get_block_node_pairs(metadata.id, blocks)
+                .await?;
+
+            tracing::debug!(
+                "Found {} blocks for file {} in cache",
+                blocks_nodes.len(),
+                normalized_path
+            );
+            tracing::warn!("blocks_nodes: {:?}", blocks_nodes);
+
+            let file_client = self.file_client.clone();
+            let normalized_path = normalized_path.clone();
+            let metadata = metadata.clone();
+            let blocks_nodes = blocks_nodes.clone();
+
+            let stream: BoxStream<'static, Result<Bytes>> = try_stream! {
+                for (block_desc, block_node) in blocks_nodes {
+                    tracing::debug!(
+                        "Reading chunk {} owned by node {}",
+                        metadata.id,
+                        block_node.node_id
+                    );
+                    let node_info = block_node.clone();
+                    let dst_url = node_info.url.clone();
+
+                    // Assume read_block returns Result<Option<Bytes>>
+                    if let Some(data) = file_client
+                        .read_block(
+                            &normalized_path,
+                            metadata.id,
+                            block_desc.clone(),
+                            dst_url,
+                        )
+                        .await?
+                    {
+                        // Do not wrap in Ok here; yield the bytes directly
+                        tracing::debug!(
+                            "Successfully read block index {} of file {} from cache node {}",
+                            block_desc.index,
+                            normalized_path,
+                            node_info.node_id
+                        );
+                        yield data;
+                    } else {
+                        // Emit an error here so the outer stream produces Err(Error)
+                        Err(Error::Internal(format!(
+                            "Block data not found for block index {}",
+                            block_desc.index
+                        )))?;
+                    }
+                }
             }
-            Err(e) => Err(e),
+            .boxed();
+
+            return Ok((metadata, stream));
         }
+
+        // If not in metadata, read from UFS
+        let (ufs, relative_path, _mount_path) = self.get_mount_for_path(&normalized_path).await?;
+
+        let (obj_meta, ufs_read_stream) = ufs.read(&relative_path).await?;
+        let new_metadata = FileMetadata::new_file(
+            normalized_path.clone(),
+            obj_meta.size as u64,
+            None,
+            Some(relative_path),
+        );
+        let new_metadata_id = new_metadata.id;
+
+        // Store Cache
+        let blocks = self
+            .block_accessor
+            .plan_chunk_layout(new_metadata.size)
+            .await;
+        let path_for_cache = normalized_path.clone();
+        let blocks_for_cache = blocks.clone();
+        let file_id = new_metadata_id;
+        let block_accessor_for_cache = self.block_accessor.clone();
+        let file_client_for_cache = self.file_client.clone();
+
+        let ufs_stream = ufs_read_stream;
+        let normalized_path_for_stream = normalized_path.clone();
+
+        // Clone all necessary Arcs and data to move into the stream
+        let block_accessor_for_cache = block_accessor_for_cache.clone();
+        let file_client_for_cache = file_client_for_cache.clone();
+        let path_for_cache = path_for_cache.clone();
+        let blocks_for_cache = blocks_for_cache.clone();
+        let file_id = file_id.clone();
+        let normalized_path_for_stream = normalized_path_for_stream.clone();
+
+        let tee_stream: BoxStream<'static, Result<Bytes>> = try_stream! {
+            let mut block_idx: usize = 0;
+            let mut block_buf = BytesMut::new();
+            let mut pos_in_block: u64 = 0;
+
+            let mut ufs_stream = ufs_stream; // shadow to move into stream
+
+            while let Some(chunk) = ufs_stream.next().await {
+                let bytes = chunk?; // one chunk read from UFS
+                let mut remaining: &[u8] = &bytes;
+                while !remaining.is_empty() && block_idx < blocks_for_cache.len() {
+                    let block = &blocks_for_cache[block_idx];
+                    let block_size = block.size as u64;
+
+                    let space_in_block = (block_size - pos_in_block) as usize;
+                    let take_len = remaining.len().min(space_in_block);
+
+                    // Accumulate chunk bytes into block_buf
+                    block_buf.extend_from_slice(&remaining[..take_len]);
+                    pos_in_block += take_len as u64;
+                    remaining = &remaining[take_len..];
+
+                    // Flush to cache once the block buffer is full
+                    if pos_in_block == block_size {
+                        let data = Bytes::from(block_buf.split().freeze());
+                        tracing::debug!(
+                            "Writing block {} of file {} to cache",
+                            block.index,
+                            normalized_path_for_stream
+                        );
+                        let node = block_accessor_for_cache
+                            .get_node_by_block(file_id, block)
+                            .await?;
+                        let dst_url = node.url.clone();
+                        file_client_for_cache
+                            .write_block(
+                                &path_for_cache,
+                                file_id,
+                                block.clone(),
+                                data.clone(),
+                                dst_url,
+                            )
+                            .await?;
+
+                        block_idx += 1;
+                        pos_in_block = 0;
+                    }
+                }
+                yield bytes;
+            }
+            // After the loop, flush any partially filled block that remains
+            if !block_buf.is_empty() && block_idx < blocks_for_cache.len() {
+                let block = &blocks_for_cache[block_idx];
+                let data = Bytes::from(block_buf.freeze());
+                let node = block_accessor_for_cache
+                    .get_node_by_block(file_id, block)
+                    .await?;
+                let dst_url = node.url.clone();
+                file_client_for_cache
+                    .write_block(
+                        &path_for_cache,
+                        file_id,
+                        block.clone(),
+                        data.clone(),
+                        dst_url,
+                    )
+                    .await?;
+            }
+        }
+        .boxed();
+        self.metadata.put(new_metadata.clone()).await?;
+        Ok((new_metadata, tee_stream))
     }
 
-    async fn read(&self, path: &str) -> Result<Bytes> {
+    async fn read_block(
+        &self,
+        path: &str,
+        file_id: uuid::Uuid,
+        block_desc: BlockDesc,
+    ) -> Result<BoxStream<'static, Result<Bytes>>> {
         let normalized_path = common::normalize_path(path)?;
 
-        let metadata = self
-            .metadata
-            .get(&normalized_path)
-            .await?
-            .ok_or_else(|| Error::PathNotFound(normalized_path.clone()))?;
+        let (ufs, relative_path, _mount_path) = self.get_mount_for_path(&normalized_path).await?;
+        let start = block_desc.range_start;
+        let end = block_desc.range_end;
 
-        if !metadata.is_file() {
-            return Err(Error::NotAFile(normalized_path));
+        // Check cache first
+        if let Ok(bytes) = self.cache.read_block(file_id, block_desc.index).await {
+            let cached_stream = futures::stream::once(async move { Ok(bytes) }).boxed();
+            tracing::debug!(
+                "Cache hit for block {} of file {}",
+                block_desc.index,
+                normalized_path
+            );
+            return Ok(cached_stream);
         }
 
-        let ufs_path = metadata
-            .ufs_path
-            .ok_or_else(|| Error::Internal("File metadata missing UFS path".to_string()))?;
+        // TODO: range_read is not implemented as streaming in UFS yet
+        let ufs_bytes = ufs.read_range(&relative_path, start, end).await?;
 
-        // Resolve to mount point to get the right UFS instance
-        let (ufs, _relative_path, _mount_path) = self.get_mount_for_path(&normalized_path).await?;
+        let cache_for_store = self.cache.clone();
+        let file_id_for_store = file_id;
+        let index_for_store = block_desc.index;
+        let bytes_for_store = ufs_bytes.clone();
 
-        ufs.read(&ufs_path).await
+        // Store in cache asynchronously
+        tokio::spawn(async move {
+            if let Err(e) = cache_for_store
+                .store_block(file_id_for_store, index_for_store, bytes_for_store)
+                .await
+            {
+                tracing::warn!(
+                    "failed to store block {} of file {} into cache: {}",
+                    index_for_store,
+                    file_id_for_store,
+                    e
+                );
+            }
+        });
+        let s = stream::once(async move { Ok(ufs_bytes) }).boxed();
+        Ok(s)
     }
 
     async fn write(&self, path: &str, data: Bytes) -> Result<()> {
@@ -333,12 +494,48 @@ impl FileSystem for VirtualFsWithMounts {
         // Update metadata
         metadata.size = data.len() as u64;
         metadata.modified_at = chrono::Utc::now();
+        // TODO: Store Cache
+        // self.cache_accessor.store_file(metadata.id, data.clone()).await?;
         self.metadata.put(metadata).await?;
 
         Ok(())
     }
 
-    async fn stat(&self, path: &str) -> Result<FileStatus> {
+    async fn write_block(
+        &self,
+        path: &str,
+        file_id: uuid::Uuid,
+        block_desc: BlockDesc,
+        data: Bytes,
+    ) -> Result<()> {
+        let normalized_path = common::normalize_path(path)?;
+
+        let metadata = self
+            .metadata
+            .get(&normalized_path)
+            .await?
+            .ok_or_else(|| Error::PathNotFound(normalized_path.clone()))?;
+
+        if !metadata.is_file() {
+            return Err(Error::NotAFile(normalized_path));
+        }
+
+        let result = self
+            .cache
+            .store_block(file_id, block_desc.index, data.clone())
+            .await?;
+
+        tracing::debug!(
+            "Wrote block {} of file {} to cache",
+            block_desc.index,
+            normalized_path
+        );
+
+        // TODO: If needed, write ufs
+        Ok(result)
+    }
+
+    async fn stat(&self, path: &str) -> Result<FileMetadata> {
         let normalized_path = common::normalize_path(path)?;
 
         let metadata = self
@@ -347,10 +544,10 @@ impl FileSystem for VirtualFsWithMounts {
             .await?
             .ok_or_else(|| Error::PathNotFound(normalized_path))?;
 
-        Ok(FileStatus::from(&metadata))
+        Ok(metadata)
     }
 
-    async fn list(&self, path: &str) -> Result<Vec<FileStatus>> {
+    async fn list(&self, path: &str) -> Result<Vec<FileMetadata>> {
         let normalized_path = common::normalize_path(path)?;
 
         // Get or create directory metadata
@@ -362,17 +559,7 @@ impl FileSystem for VirtualFsWithMounts {
                 meta
             }
             None => {
-                // Auto-create directory metadata for the path
-                let parent_id = if let Some(parent_path) = common::parent_path(&normalized_path) {
-                    self.metadata.get(&parent_path).await?.map(|p| p.id)
-                } else {
-                    None
-                };
-                let meta = FileMetadata::new_directory(normalized_path.clone(), parent_id);
-                self.metadata.put(meta).await?;
-                self.metadata.get(&normalized_path).await?.ok_or_else(|| {
-                    Error::Internal("Failed to create directory metadata".to_string())
-                })?
+                return Err(Error::PathNotFound(normalized_path));
             }
         };
 
@@ -380,13 +567,13 @@ impl FileSystem for VirtualFsWithMounts {
         match self.get_mount_for_path(&normalized_path).await {
             Ok((ufs, _relative_path, mount_path)) => {
                 // Get UFS path prefix for listing
-                tracing::info!("Listing directory at VFS path: {}", normalized_path);
-                tracing::info!("Resolved to mount path: {}", mount_path);
+                tracing::debug!("Listing directory at VFS path: {}", normalized_path);
+                tracing::debug!("Resolved to mount path: {}", mount_path);
                 let ufs_prefix = self.generate_ufs_path(&normalized_path, &mount_path);
 
                 // List files from UFS
                 let (ufs_files, ufs_dirs) = ufs.list_dir(&ufs_prefix).await?;
-                tracing::info!("UFS listed files: {:?}, dirs: {:?}", ufs_files, ufs_dirs);
+                tracing::debug!("UFS listed files: {:?}, dirs: {:?}", ufs_files, ufs_dirs);
 
                 // Sync with metadata store
                 let mut result = Vec::new();
@@ -397,7 +584,7 @@ impl FileSystem for VirtualFsWithMounts {
                 for child in &existing_children {
                     let name = child.path.rsplit('/').next().unwrap_or(&child.path);
                     metadata_names.insert(name.to_string());
-                    result.push(FileStatus::from(child));
+                    result.push(child.clone());
                 }
 
                 // Add files from UFS that are not in metadata
@@ -421,7 +608,7 @@ impl FileSystem for VirtualFsWithMounts {
                             Some(ufs_file_path),
                         );
                         self.metadata.put(file_metadata.clone()).await?;
-                        result.push(FileStatus::from(&file_metadata));
+                        result.push(file_metadata);
                         metadata_names.insert(filename);
                     }
                 }
@@ -439,7 +626,7 @@ impl FileSystem for VirtualFsWithMounts {
                         let sub_dir_metadata =
                             FileMetadata::new_directory(dir_path.clone(), Some(dir_metadata.id));
                         self.metadata.put(sub_dir_metadata.clone()).await?;
-                        result.push(FileStatus::from(&sub_dir_metadata));
+                        result.push(sub_dir_metadata);
                     }
                 }
 
@@ -447,15 +634,12 @@ impl FileSystem for VirtualFsWithMounts {
             }
             Err(Error::PathNotFound(_)) => {
                 // No mount available; return metadata-only listing
-                tracing::info!(
+                tracing::debug!(
                     "No mount found for {}, returning metadata-only listing",
                     normalized_path
                 );
                 let existing_children = self.metadata.list_children(&dir_metadata.id).await?;
-                Ok(existing_children
-                    .into_iter()
-                    .map(|child| FileStatus::from(&child))
-                    .collect())
+                Ok(existing_children.into_iter().map(|child| child).collect())
             }
             Err(e) => Err(e),
         }
@@ -483,6 +667,8 @@ impl FileSystem for VirtualFsWithMounts {
 
         // Delete metadata
         self.metadata.delete(&normalized_path).await?;
+        // TODO: DELETE FROM CACHE
+        // self.cache.invalidate_file(metadata.id).await;
 
         Ok(())
     }

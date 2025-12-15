@@ -1,6 +1,7 @@
 syntax = "proto3";
 
 package arustio.file;
+import "meta.proto";
 
 // File service for filesystem operations
 service FileService {
@@ -16,20 +17,24 @@ service FileService {
   // Copy file from local to Arustio
   rpc CopyFromLocal(stream CopyFromLocalRequest) returns (CopyFromLocalResponse);
 
-  // Copy file from Arustio to local
-  rpc CopyToLocal(CopyToLocalRequest) returns (stream CopyToLocalResponse);
-
   // Read file content
-  rpc ReadFile(ReadFileRequest) returns (stream ReadFileResponse);
+  rpc Read(ReadRequest) returns (stream ReadResponse);
+
+  // Read blocks of a file
+  rpc ReadBlock(ReadBlockRequest) returns (stream ReadBlockResponse);
 
   // Write file content
   rpc WriteFile(stream WriteFileRequest) returns (WriteFileResponse);
+
+  // Write Block of a file
+  rpc WriteBlock(stream WriteBlockRequest) returns (WriteBlockResponse);
 
   // Remove file
   rpc RemoveFile(RemoveFileRequest) returns (RemoveFileResponse);
 
   // Remove directory
   rpc RemoveDir(RemoveDirRequest) returns (RemoveDirResponse);
+
 }
 
 // List files request
@@ -37,25 +42,9 @@ message ListFilesRequest {
   string path = 1;
 }
 
-// File entry information
-message FileEntry {
-  string name = 1;
-  string path = 2;
-  FileType file_type = 3;
-  uint64 size = 4;
-  int64 modified_at = 5;  // Unix timestamp
-}
-
-// File type enum
-enum FileType {
-  FILE_TYPE_UNKNOWN = 0;
-  FILE_TYPE_FILE = 1;
-  FILE_TYPE_DIRECTORY = 2;
-}
-
 // List files response
 message ListFilesResponse {
-  repeated FileEntry entries = 1;
+  repeated arustio.meta.FileMetadata entries = 1;
 }
 
 // Stat request
@@ -65,7 +54,7 @@ message StatRequest {
 
 // Stat response
 message StatResponse {
-  FileEntry entry = 1;
+  arustio.meta.FileMetadata entry = 1;
 }
 
 // Mkdir request
@@ -118,15 +107,52 @@ message CopyToLocalMetadata {
   uint64 file_size = 1;
 }
 
-// ReadFile request
-message ReadFileRequest {
+// Read request
+message ReadRequest {
   string path = 1;
 }
 
-// ReadFile response (streaming)
-message ReadFileResponse {
+// Read response (streaming)
+message ReadResponse {
+  oneof data {
+    arustio.meta.FileMetadata metadata = 1;
+    bytes chunk = 2;
+  }
+}
+
+// ReadBlock request
+message ReadBlockRequest {
+  string path = 1;
+  string file_id = 2;
+  arustio.meta.BlockDesc block_desc = 3;
+}
+
+// WriteBlock request (streaming)
+message WriteBlockRequest {
+  oneof data {
+    WriteBlockMetadata metadata = 1;
+    bytes chunk = 2;
+  }
+}
+
+message WriteBlockMetadata {
+  string path = 1;
+  string file_id = 2;
+  arustio.meta.BlockDesc block_desc = 3;
+}
+
+// WriteBlock response
+message WriteBlockResponse {
+  bool success = 1;
+  string message = 2;
+  uint64 bytes_written = 3;
+}
+
+// ReadBlock response (streaming)
+message ReadBlockResponse {
   bytes chunk = 1;
 }
+
 
 // WriteFile request (streaming)
 message WriteFileRequest {

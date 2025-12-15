@@ -10,7 +10,7 @@
 use async_trait::async_trait;
 use bytes::Bytes;
 use common::{Error, Result};
-use object_store::{ObjectStore, path::Path as ObjectPath};
+use object_store::{ObjectMeta, ObjectStore, path::Path as ObjectPath};
 use std::sync::Arc;
 
 pub mod config;
@@ -19,11 +19,16 @@ pub mod store;
 pub use config::UfsConfig;
 pub use store::UnifiedStore;
 
+use futures::stream::BoxStream;
+
 /// Trait for UFS operations
 #[async_trait]
 pub trait UfsOperations: Send + Sync {
     /// Read an object from UFS
-    async fn read(&self, path: &str) -> Result<Bytes>;
+    async fn read(&self, path: &str) -> Result<(ObjectMeta, BoxStream<'static, Result<Bytes>>)>;
+
+    /// Read an object from UFS with range
+    async fn read_range(&self, path: &str, start: u64, end: u64) -> Result<Bytes>;
 
     /// Write an object to UFS
     async fn write(&self, path: &str, data: Bytes) -> Result<()>;
@@ -70,20 +75,41 @@ impl Ufs {
 
 #[async_trait]
 impl UfsOperations for Ufs {
-    async fn read(&self, path: &str) -> Result<Bytes> {
+    async fn read(&self, path: &str) -> Result<(ObjectMeta, BoxStream<'static, Result<Bytes>>)> {
+        use futures::stream::StreamExt;
+
         let object_path = Self::to_object_path(path);
-        let result = self
+
+        let get_result = self
             .store
             .get(&object_path)
             .await
-            .map_err(|e| Error::Storage(format!("Failed to read {}: {}", path, e)))?;
+            .map_err(|e| Error::Storage(format!("Failed to get {}: {}", path, e)))?;
 
-        let bytes = result
-            .bytes()
+        let meta = get_result.meta.clone();
+
+        let stream = get_result
+            .into_stream()
+            .map(|res| res.map_err(|e| Error::Storage(format!("Failed to read data from: {}", e))))
+            .boxed();
+
+        Ok((meta, stream))
+    }
+
+    async fn read_range(&self, path: &str, start: u64, end: u64) -> Result<Bytes> {
+        let object_path = Self::to_object_path(path);
+
+        let data = self
+            .store
+            .get_range(&object_path, start..end)
             .await
-            .map_err(|e| Error::Storage(format!("Failed to read bytes from {}: {}", path, e)))?;
-
-        Ok(bytes)
+            .map_err(|e| {
+                Error::Storage(format!(
+                    "Failed to get range {}-{} of {}: {}",
+                    start, end, path, e
+                ))
+            })?;
+        Ok(data)
     }
 
     async fn write(&self, path: &str, data: Bytes) -> Result<()> {

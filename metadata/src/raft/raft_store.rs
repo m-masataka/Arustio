@@ -13,7 +13,7 @@ use std::sync::Arc;
 use ufs::UfsConfig;
 use uuid::Uuid;
 
-/// In-memory metadata store
+/// Raft-based metadata store implementation
 #[derive(Clone)]
 pub struct RaftMetadataStore {
     raft_client: Arc<RaftClient>,
@@ -63,13 +63,13 @@ impl MetadataStore for RaftMetadataStore {
         let key = kv_key_path(path);
         let meta = self.read_file_metadata(&key)?;
         if meta.is_none() {
-            tracing::info!("No FileMetadata found for path {}", path);
+            tracing::debug!("No FileMetadata found for path {}", path);
         }
         Ok(meta)
     }
 
     async fn put(&self, metadata: FileMetadata) -> Result<()> {
-        tracing::info!(
+        tracing::debug!(
             "Putting FileMetadata for path {}: {:?}",
             metadata.path,
             metadata
@@ -178,7 +178,7 @@ impl MetadataStore for RaftMetadataStore {
                 .get_kv_value(key.as_bytes())
                 .map_err(|e| Error::Internal(format!("Failed to get mount value: {}", e)))?
             {
-                tracing::info!("Got mount value for key {}: {:?}", key, value);
+                tracing::debug!("Got mount value for key {}: {:?}", key, value);
                 let mount = common::meta::Mount::decode(value.as_slice())
                     .map_err(|e| Error::Internal(format!("Failed to decode mount entry: {}", e)))?;
                 // let mount: common::meta::Mount = prost::Message::decode(value.as_slice())
@@ -192,7 +192,7 @@ impl MetadataStore for RaftMetadataStore {
                 });
             }
         }
-        tracing::info!("Listing mounts: {:?}", mounts);
+        tracing::debug!("Listing mounts: {:?}", mounts);
         Ok(mounts)
     }
 }

@@ -45,6 +45,17 @@ pub struct FileMetadata {
 
     /// UFS path (actual object storage path)
     pub ufs_path: Option<String>,
+
+    /// List of data blocks
+    pub blocks: Vec<BlockDesc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BlockDesc {
+    pub index: u64,
+    pub size: u32,
+    pub range_start: u64,
+    pub range_end: u64,
 }
 
 impl FileMetadata {
@@ -59,6 +70,7 @@ impl FileMetadata {
             modified_at: now,
             parent_id,
             ufs_path: None,
+            blocks: Vec::new(),
         }
     }
 
@@ -78,6 +90,7 @@ impl FileMetadata {
             modified_at: now,
             parent_id,
             ufs_path,
+            blocks: Vec::new(),
         }
     }
 
@@ -90,26 +103,7 @@ impl FileMetadata {
     }
 }
 
-/// File status information (similar to stat)
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FileStatus {
-    pub path: String,
-    pub file_type: FileType,
-    pub size: u64,
-    pub modified_at: DateTime<Utc>,
-}
-
-impl From<&FileMetadata> for FileStatus {
-    fn from(metadata: &FileMetadata) -> Self {
-        Self {
-            path: metadata.path.clone(),
-            file_type: metadata.file_type,
-            size: metadata.size,
-            modified_at: metadata.modified_at,
-        }
-    }
-}
-
+use crate::meta::BlockDesc as ProtoBlockDesc;
 use crate::meta::FileMetadata as ProtoFileMetadata;
 use prost_types::Timestamp;
 use std::convert::TryFrom;
@@ -147,6 +141,18 @@ impl From<FileMetadata> for ProtoFileMetadata {
             }),
             parent_id: opt_to_string(meta.parent_id.map(|pid| pid.to_string())),
             ufs_path: meta.ufs_path.unwrap_or_default(),
+            blocks: meta.blocks.into_iter().map(|b| b.into()).collect(),
+        }
+    }
+}
+
+impl From<BlockDesc> for ProtoBlockDesc {
+    fn from(block: BlockDesc) -> Self {
+        crate::meta::BlockDesc {
+            index: block.index,
+            size: block.size,
+            range_start: block.range_start,
+            range_end: block.range_end,
         }
     }
 }
@@ -189,6 +195,24 @@ impl TryFrom<ProtoFileMetadata> for FileMetadata {
             } else {
                 Some(proto.ufs_path)
             },
+            blocks: proto
+                .blocks
+                .into_iter()
+                .map(|b| b.try_into())
+                .collect::<Result<Vec<_>, _>>()?,
+        })
+    }
+}
+
+impl TryFrom<ProtoBlockDesc> for BlockDesc {
+    type Error = String;
+
+    fn try_from(proto: ProtoBlockDesc) -> Result<Self, Self::Error> {
+        Ok(BlockDesc {
+            index: proto.index,
+            size: proto.size,
+            range_start: proto.range_start,
+            range_end: proto.range_end,
         })
     }
 }

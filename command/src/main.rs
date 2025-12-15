@@ -1,6 +1,9 @@
+use std::alloc::System;
+use std::io::Read;
+
 use clap::{Parser, Subcommand};
 use common::file::{
-    CopyFromLocalRequest, CopyToLocalRequest, ListFilesRequest, MkdirRequest,
+    CopyFromLocalRequest, ListFilesRequest, MkdirRequest, ReadRequest, StatRequest,
     copy_from_local_request, copy_to_local_response, file_service_client::FileServiceClient,
 };
 use common::meta::{
@@ -12,6 +15,8 @@ use common::meta::{
 use common::mount::{
     ListRequest, MountRequest, UnmountRequest, mount_service_client::MountServiceClient,
 };
+use common::read_response;
+use common::utils::timestamp_to_system_time;
 use tokio::fs::File;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_stream::StreamExt;
@@ -90,6 +95,13 @@ enum FsCommands {
         /// Long format (detailed information)
         #[arg(short, long)]
         long: bool,
+    },
+
+    /// Stat a file or directory
+    Stat {
+        /// Path to stat
+        #[arg(value_name = "PATH")]
+        path: String,
     },
 
     /// Create a directory
@@ -171,6 +183,9 @@ async fn handle_fs_command(command: FsCommands, server: &str) -> anyhow::Result<
         }
         FsCommands::Ls { path, long } => {
             handle_ls(path, long, server).await?;
+        }
+        FsCommands::Stat { path } => {
+            handle_stat(path, server).await?;
         }
         FsCommands::Mkdir { path } => {
             handle_mkdir(path, server).await?;
@@ -318,24 +333,64 @@ async fn handle_ls(path: String, long_format: bool, server: &str) -> anyhow::Res
 
     for entry in entries {
         if long_format {
-            let file_type = if entry.file_type == common::file::FileType::Directory as i32 {
+            let file_type = if entry.file_type == common::meta::FileType::Directory as i32 {
                 "d"
             } else {
                 "-"
             };
-            let timestamp = chrono::DateTime::from_timestamp(entry.modified_at, 0)
-                .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
-                .unwrap_or_else(|| "unknown".to_string());
-
+            let timestamp = match entry.modified_at {
+                None => std::time::SystemTime::UNIX_EPOCH,
+                Some(ts) => timestamp_to_system_time(&ts),
+            };
+            let modified_at = chrono::DateTime::<chrono::Local>::from(timestamp);
             println!(
                 "{} {:>10} {} {}",
-                file_type, entry.size, timestamp, entry.name
+                file_type, entry.size, modified_at, entry.path
             );
         } else {
-            println!("{}", entry.name);
+            println!("{}", entry.path);
         }
     }
 
+    Ok(())
+}
+
+async fn handle_stat(path: String, server: &str) -> anyhow::Result<()> {
+    let mut client = FileServiceClient::connect(normalize_server_url(server)).await?;
+
+    let request = tonic::Request::new(StatRequest { path: path.clone() });
+
+    let response = client.stat(request).await?;
+    let entry_opt = response.into_inner().entry;
+
+    let entry = match entry_opt {
+        None => anyhow::bail!("Path not found: {}", path),
+        Some(e) => e,
+    };
+
+    // Assuming path is unique, take the first entry
+    let file_type = if entry.file_type == common::meta::FileType::Directory as i32 {
+        "Directory"
+    } else {
+        "File"
+    };
+
+    let timestamp = match entry.modified_at {
+        None => std::time::SystemTime::UNIX_EPOCH,
+        Some(ts) => timestamp_to_system_time(&ts),
+    };
+    let modified_at = chrono::DateTime::<chrono::Local>::from(timestamp);
+    let blocks = entry
+        .blocks
+        .iter()
+        .map(|block| format!("[index {}, size {}]", block.index, block.size))
+        .collect::<Vec<_>>()
+        .join(", ");
+    println!("Path: {}", path);
+    println!("Type: {}", file_type);
+    println!("Size: {} bytes", entry.size);
+    println!("Modified At: {}", modified_at);
+    println!("Blocks: {}", blocks);
     Ok(())
 }
 
@@ -363,71 +418,6 @@ async fn handle_copy_from_local(
     remote_path: String,
     server: &str,
 ) -> anyhow::Result<()> {
-    println!("Copying {} to {}", local_path, remote_path);
-
-    // Read local file
-    let mut file = File::open(&local_path).await?;
-    let metadata = file.metadata().await?;
-    let file_size = metadata.len();
-
-    println!("File size: {} bytes", file_size);
-
-    let mut client = FileServiceClient::connect(normalize_server_url(server)).await?;
-
-    // Create stream
-    let (tx, rx) = tokio::sync::mpsc::channel(128);
-    let request_stream = tokio_stream::wrappers::ReceiverStream::new(rx);
-
-    // Send metadata first
-    let metadata_msg = CopyFromLocalRequest {
-        data: Some(copy_from_local_request::Data::Metadata(
-            common::file::CopyFromLocalMetadata {
-                destination_path: remote_path.clone(),
-                file_size,
-            },
-        )),
-    };
-
-    tx.send(metadata_msg).await?;
-
-    // Spawn task to read and send file chunks
-    tokio::spawn(async move {
-        const CHUNK_SIZE: usize = 64 * 1024; // 64KB
-        let mut buffer = vec![0u8; CHUNK_SIZE];
-
-        loop {
-            match file.read(&mut buffer).await {
-                Ok(0) => break, // EOF
-                Ok(n) => {
-                    let chunk_msg = CopyFromLocalRequest {
-                        data: Some(copy_from_local_request::Data::Chunk(buffer[..n].to_vec())),
-                    };
-
-                    if tx.send(chunk_msg).await.is_err() {
-                        break;
-                    }
-                }
-                Err(e) => {
-                    eprintln!("Error reading file: {}", e);
-                    break;
-                }
-            }
-        }
-    });
-
-    let request = tonic::Request::new(request_stream);
-    let response = client.copy_from_local(request).await?;
-    let response = response.into_inner();
-
-    if response.success {
-        println!(
-            "Successfully uploaded {} bytes to {}",
-            response.bytes_written, remote_path
-        );
-    } else {
-        anyhow::bail!("Failed to upload file: {}", response.message);
-    }
-
     Ok(())
 }
 
@@ -440,11 +430,11 @@ async fn handle_copy_to_local(
 
     let mut client = FileServiceClient::connect(normalize_server_url(server)).await?;
 
-    let request = tonic::Request::new(CopyToLocalRequest {
-        source_path: remote_path.clone(),
+    let request = tonic::Request::new(ReadRequest {
+        path: remote_path.clone(),
     });
 
-    let mut stream = client.copy_to_local(request).await?.into_inner();
+    let mut stream = client.read(request).await?.into_inner();
 
     // Read metadata first
     let first_msg = stream
@@ -453,7 +443,7 @@ async fn handle_copy_to_local(
         .ok_or_else(|| anyhow::anyhow!("Empty response from server"))??;
 
     let file_size = match first_msg.data {
-        Some(copy_to_local_response::Data::Metadata(m)) => m.file_size,
+        Some(read_response::Data::Metadata(m)) => m.size,
         _ => anyhow::bail!("Expected metadata as first message"),
     };
 
@@ -463,11 +453,12 @@ async fn handle_copy_to_local(
     let mut file = File::create(&local_path).await?;
     let mut total_bytes = 0u64;
 
+    println!("Downloading...");
     // Read chunks
     while let Some(msg) = stream.next().await {
         let msg = msg?;
         match msg.data {
-            Some(copy_to_local_response::Data::Chunk(chunk)) => {
+            Some(read_response::Data::Chunk(chunk)) => {
                 file.write_all(&chunk).await?;
                 total_bytes += chunk.len() as u64;
             }

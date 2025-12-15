@@ -16,3 +16,4 @@ anyhow = { workspace = true }
 serde = { workspace = true }
 url = "2.5"
 futures = "0.3"
+tokio-util = "0.7"

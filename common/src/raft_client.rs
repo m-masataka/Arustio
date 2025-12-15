@@ -1,6 +1,7 @@
 // create client class
 use crate::meta::{
-    FileMetadata, GetFileMetaRequest, GetLeaderRequest, MetaCmd, meta_api_client::MetaApiClient,
+    CacheNodeInfo, FileMetadata, GetCacheNodesRequest, GetFileMetaRequest, GetLeaderRequest,
+    MetaCmd, meta_api_client::MetaApiClient,
 };
 use std::io;
 use std::time::Duration;
@@ -10,6 +11,7 @@ use tokio::time::sleep;
 pub struct RaftClient {
     bootstrap_address: String,
 }
+use crate::Result;
 
 impl RaftClient {
     pub fn new<S: Into<String>>(bootstrap_address: S) -> Self {
@@ -18,10 +20,15 @@ impl RaftClient {
         }
     }
 
-    pub async fn get_leader_address(&self) -> Result<String, Box<dyn std::error::Error>> {
+    pub async fn get_leader_address(&self) -> Result<String> {
         let mut client = self.bootstrap_client().await?;
         let request = tonic::Request::new(GetLeaderRequest {});
-        let response = client.get_leader(request).await?;
+        let response = client.get_leader(request).await.map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::Other,
+                format!("Failed to get leader info: {}", e),
+            )
+        })?;
         let leader_info = response.into_inner();
         if leader_info.leader_id == 0
             || leader_info.leader_ip.is_empty()
@@ -32,38 +39,76 @@ impl RaftClient {
         Ok(leader_info.leader_ip)
     }
 
-    pub async fn send_command(&self, cmd: MetaCmd) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn send_command(&self, cmd: MetaCmd) -> Result<()> {
         let leader_address = self.get_leader_address().await?;
-        tracing::info!("Leader address: {}", leader_address);
+        tracing::debug!("Leader address: {}", leader_address);
         let dst_url = format!("http://{}", leader_address);
-        tracing::info!("Connecting to leader at: {}", dst_url);
-        let mut client = MetaApiClient::connect(dst_url).await?;
+        tracing::debug!("Connecting to leader at: {}", dst_url);
+        let mut client = MetaApiClient::connect(dst_url).await.map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::Other,
+                format!("Failed to connect to leader: {}", e),
+            )
+        })?;
 
         let request = tonic::Request::new(cmd);
-        let response = client.apply(request).await?;
-        tracing::info!("Command applied: {:?}", response.into_inner());
+        let response = client.apply(request).await.map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::Other,
+                format!("Failed to send command to leader: {}", e),
+            )
+        })?;
+        tracing::debug!("Command applied: {:?}", response.into_inner());
         Ok(())
     }
 
-    pub async fn get_file_metadata(
-        &self,
-        path: String,
-    ) -> Result<Option<FileMetadata>, Box<dyn std::error::Error>> {
+    pub async fn get_file_metadata(&self, path: String) -> Result<Option<FileMetadata>> {
         let leader_address = self.get_leader_address().await?;
-        tracing::info!("Leader address: {}", leader_address);
+        tracing::debug!("Leader address: {}", leader_address);
         let dst_url = format!("http://{}", leader_address);
-        tracing::info!("Connecting to leader at: {}", dst_url);
-        let mut client = MetaApiClient::connect(dst_url).await?;
+        tracing::debug!("Connecting to leader at: {}", dst_url);
+        let mut client = MetaApiClient::connect(dst_url).await.map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::Other,
+                format!("Failed to connect to leader: {}", e),
+            )
+        })?;
 
         let request = tonic::Request::new(GetFileMetaRequest { full_path: path });
-        let response = client.get_file_meta(request).await?;
+        let response = client.get_file_meta(request).await.map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::Other,
+                format!("Failed to get file metadata from leader: {}", e),
+            )
+        })?;
         let file_meta_response = response.into_inner();
         Ok(file_meta_response.metadata)
     }
 
-    async fn bootstrap_client(
-        &self,
-    ) -> Result<MetaApiClient<tonic::transport::Channel>, Box<dyn std::error::Error>> {
+    pub async fn get_cache_nodes(&self) -> Result<Vec<CacheNodeInfo>> {
+        let leader_address = self.get_leader_address().await?;
+        tracing::debug!("Leader address: {}", leader_address);
+        let dst_url = format!("http://{}", leader_address);
+        tracing::debug!("Connecting to leader at: {}", dst_url);
+        let mut client = MetaApiClient::connect(dst_url).await.map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::Other,
+                format!("Failed to connect to leader: {}", e),
+            )
+        })?;
+        let request = tonic::Request::new(GetCacheNodesRequest {});
+        let response = client.get_cache_nodes(request).await.map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::Other,
+                format!("Failed to get cache nodes: {}", e),
+            )
+        })?;
+        let nodes_response = response.into_inner();
+        let nodes: Vec<CacheNodeInfo> = nodes_response.nodes;
+        Ok(nodes)
+    }
+
+    async fn bootstrap_client(&self) -> Result<MetaApiClient<tonic::transport::Channel>> {
         let mut attempts = 0;
         loop {
             match MetaApiClient::connect(self.bootstrap_address.clone()).await {
@@ -78,7 +123,16 @@ impl RaftClient {
                     );
                     sleep(Duration::from_millis(200 * attempts)).await;
                 }
-                Err(e) => return Err(Box::new(e)),
+                Err(e) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::Other,
+                        format!(
+                            "Failed to connect to bootstrap {} after {} attempts: {}",
+                            self.bootstrap_address, attempts, e
+                        ),
+                    )
+                    .into());
+                }
             }
         }
     }

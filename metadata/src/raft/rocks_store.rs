@@ -6,6 +6,7 @@ use raft::{Error as RaftError, Result as RaftResult, Storage};
 use rocksdb::{ColumnFamilyDescriptor, DBWithThreadMode, MultiThreaded, Options, WriteBatch};
 use std::sync::Arc;
 
+use crate::utils::CACHE_NODE_PREFIX;
 use crate::utils::kv_key_path;
 
 const CF_RAFT_LOG: &str = "raft_log";
@@ -178,6 +179,27 @@ impl RocksStorage {
             Ok(None)
         }
     }
+
+    // Get CacheNode info for given node_id from KV CF
+    pub async fn get_cache_nodes(&self) -> Result<Vec<common::meta::CacheNodeInfo>> {
+        let mut nodes = Vec::new();
+        let it = self.db.iterator_cf(
+            &self.cf_kv,
+            rocksdb::IteratorMode::From(CACHE_NODE_PREFIX, rocksdb::Direction::Forward),
+        );
+        for kv in it {
+            let (k, v) = kv?;
+            if !k.starts_with(CACHE_NODE_PREFIX) {
+                break;
+            }
+            let node_info: common::meta::CacheNodeInfo = prost::Message::decode(v.as_ref())
+                .map_err(|e| {
+                    common::Error::Internal(format!("Failed to decode CacheNodeInfo entry: {}", e))
+                })?;
+            nodes.push(node_info);
+        }
+        Ok(nodes)
+    }
 }
 
 // ---- Storage trait implementation (used by Raft for reads) ----
@@ -235,7 +257,7 @@ impl Storage for RocksStorage {
     }
 
     fn term(&self, idx: u64) -> RaftResult<u64> {
-        tracing::info!("RocksStorage::term idx={}", idx);
+        tracing::debug!("RocksStorage::term idx={}", idx);
         if idx == 0 {
             return Ok(0);
         }

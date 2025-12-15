@@ -177,7 +177,7 @@ pub async fn run_raft_node(
             let mut rd = rn.ready();
             // Check the read state
             if let Some(ss) = rd.ss() {
-                tracing::info!(
+                tracing::debug!(
                     "SoftState changed: leader_id={} raft_state={:?}",
                     ss.leader_id,
                     ss.raft_state
@@ -277,7 +277,7 @@ pub async fn run_raft_node(
                 tracing::debug!("Applying committed entry: {:?}", ent);
                 match ent.entry_type {
                     EntryType::EntryConfChange => {
-                        tracing::info!("Applying committed conf change: {:?}", ent);
+                        tracing::debug!("Applying committed conf change: {:?}", ent);
                         let mut cc = ConfChange::default();
                         let mut cis = CodedInputStream::from_bytes(ent.get_data());
                         cc.merge_from(&mut cis)?;
@@ -410,7 +410,7 @@ fn bootstrap_if_needed(st: &RocksStorage, node_cfg: NodeConfig) -> anyhow::Resul
     }
     // Build the voters list from configured peers
     let voters: Vec<u64> = node_cfg.peers.iter().map(|p| p.id).collect();
-    tracing::info!("bootstrap: ConfState voters = {:?}", voters);
+    tracing::debug!("bootstrap: ConfState voters = {:?}", voters);
 
     let mut cs = raft::prelude::ConfState::default();
     cs.voters = voters;
@@ -549,6 +549,27 @@ impl meta_api_server::MetaApi for MetaService {
             .map_err(|e| Status::internal(format!("failed to get file meta: {}", e)))?;
 
         let response = common::meta::GetFileMetaResponse { metadata: meta_opt };
+        Ok(Response::new(response))
+    }
+
+    async fn get_cache_nodes(
+        &self,
+        _req: Request<common::meta::GetCacheNodesRequest>,
+    ) -> std::result::Result<Response<common::meta::GetCacheNodesResponse>, Status> {
+        if !self.cluster_state.is_leader() {
+            return Err(Status::failed_precondition("not leader"));
+        }
+        self.read_handle
+            .wait()
+            .await
+            .map_err(|e| Status::internal(format!("read barrier failed: {}", e)))?;
+        let nodes = self
+            .storage
+            .get_cache_nodes()
+            .await
+            .map_err(|e| Status::internal(format!("failed to get cache nodes: {}", e)))?;
+
+        let response = common::meta::GetCacheNodesResponse { nodes: nodes };
         Ok(Response::new(response))
     }
 }

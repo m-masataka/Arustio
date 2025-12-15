@@ -1,28 +1,31 @@
 use bytes::Bytes;
-use common::file::{
-    CopyFromLocalRequest, CopyFromLocalResponse, CopyToLocalRequest, CopyToLocalResponse,
-    FileEntry, FileType, ListFilesRequest, ListFilesResponse, MkdirRequest, MkdirResponse,
-    ReadFileRequest, ReadFileResponse, RemoveDirRequest, RemoveDirResponse, RemoveFileRequest,
-    RemoveFileResponse, StatRequest, StatResponse, WriteFileRequest, WriteFileResponse,
-    file_service_server::{FileService, FileServiceServer},
-};
 use common::meta::Mount;
 use common::mount::{
     ListRequest, ListResponse, MountRequest, MountResponse, UnmountRequest, UnmountResponse,
     mount_service_server::{MountService, MountServiceServer},
 };
+use common::{
+    ReadBlockRequest, ReadBlockResponse,
+    file::{
+        CopyFromLocalRequest, CopyFromLocalResponse, ListFilesRequest, ListFilesResponse,
+        MkdirRequest, MkdirResponse, ReadRequest, ReadResponse, RemoveDirRequest,
+        RemoveDirResponse, RemoveFileRequest, RemoveFileResponse, StatRequest, StatResponse,
+        WriteBlockRequest, WriteBlockResponse, WriteFileRequest, WriteFileResponse,
+        file_service_server::{FileService, FileServiceServer},
+    },
+};
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tokio_stream::wrappers::ReceiverStream;
+use tokio_stream::{StreamExt, wrappers::ReceiverStream};
 use tonic::{Request, Response, Status};
-use vfs::{FileSystem, VirtualFsWithMounts};
+use vfs::{FileSystem, VirtualFileSystem};
 
 pub struct ArustioMountService {
-    vfs: Arc<RwLock<VirtualFsWithMounts>>,
+    vfs: Arc<RwLock<VirtualFileSystem>>,
 }
 
 impl ArustioMountService {
-    pub fn new(vfs: Arc<RwLock<VirtualFsWithMounts>>) -> Self {
+    pub fn new(vfs: Arc<RwLock<VirtualFileSystem>>) -> Self {
         Self { vfs }
     }
 
@@ -31,6 +34,8 @@ impl ArustioMountService {
     }
 }
 
+const TRANSPORT_CHUNK_SIZE: usize = 1 * 1024 * 1024;
+
 #[tonic::async_trait]
 impl MountService for ArustioMountService {
     async fn mount(
@@ -38,7 +43,7 @@ impl MountService for ArustioMountService {
         request: Request<MountRequest>,
     ) -> Result<Response<MountResponse>, Status> {
         let req = request.into_inner();
-        tracing::info!("Received mount request: path={}, uri={}", req.path, req.uri);
+        tracing::debug!("Received mount request: path={}, uri={}", req.path, req.uri);
 
         // Parse URI to UFS config
         let ufs_config = parse_uri_to_config(&req.uri, req.options.clone())
@@ -82,7 +87,7 @@ impl MountService for ArustioMountService {
         request: Request<UnmountRequest>,
     ) -> Result<Response<UnmountResponse>, Status> {
         let req = request.into_inner();
-        tracing::info!("Received unmount request: path={}", req.path);
+        tracing::debug!("Received unmount request: path={}", req.path);
 
         let vfs = self.vfs.read().await;
         match vfs.unmount(&req.path).await {
@@ -104,7 +109,7 @@ impl MountService for ArustioMountService {
     }
 
     async fn list(&self, _request: Request<ListRequest>) -> Result<Response<ListResponse>, Status> {
-        tracing::info!("Received list mount points request");
+        tracing::debug!("Received list mount points request");
 
         let vfs = self.vfs.read().await;
         let mount_info_list = vfs.list_mounts().await;
@@ -126,11 +131,11 @@ impl MountService for ArustioMountService {
 }
 
 pub struct ArustioFileService {
-    vfs: Arc<RwLock<VirtualFsWithMounts>>,
+    vfs: Arc<RwLock<VirtualFileSystem>>,
 }
 
 impl ArustioFileService {
-    pub fn new(vfs: Arc<RwLock<VirtualFsWithMounts>>) -> Self {
+    pub fn new(vfs: Arc<RwLock<VirtualFileSystem>>) -> Self {
         Self { vfs }
     }
 
@@ -146,33 +151,14 @@ impl FileService for ArustioFileService {
         request: Request<ListFilesRequest>,
     ) -> Result<Response<ListFilesResponse>, Status> {
         let req = request.into_inner();
-        tracing::info!("Received list files request: path={}", req.path);
+        tracing::debug!("Received list files request: path={}", req.path);
 
         let vfs = self.vfs.read().await;
         match vfs.list(&req.path).await {
             Ok(entries) => {
-                let file_entries: Vec<FileEntry> = entries
-                    .into_iter()
-                    .map(|e| FileEntry {
-                        name: std::path::Path::new(&e.path)
-                            .file_name()
-                            .and_then(|n| n.to_str())
-                            .unwrap_or("")
-                            .to_string(),
-                        path: e.path.clone(),
-                        file_type: match e.file_type {
-                            common::file_metadata::FileType::File => FileType::File as i32,
-                            common::file_metadata::FileType::Directory => {
-                                FileType::Directory as i32
-                            }
-                        },
-                        size: e.size,
-                        modified_at: e.modified_at.timestamp(),
-                    })
-                    .collect();
-
+                let entries_proto = entries.into_iter().map(|e| e.into()).collect();
                 Ok(Response::new(ListFilesResponse {
-                    entries: file_entries,
+                    entries: entries_proto,
                 }))
             }
             Err(e) => Err(Status::not_found(format!("Failed to list files: {}", e))),
@@ -181,27 +167,16 @@ impl FileService for ArustioFileService {
 
     async fn stat(&self, request: Request<StatRequest>) -> Result<Response<StatResponse>, Status> {
         let req = request.into_inner();
-        tracing::info!("Received stat request: path={}", req.path);
+        tracing::debug!("Received stat request: path={}", req.path);
 
         let vfs = self.vfs.read().await;
         match vfs.stat(&req.path).await {
-            Ok(stat) => {
-                let entry = FileEntry {
-                    name: std::path::Path::new(&stat.path)
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or("")
-                        .to_string(),
-                    path: stat.path.clone(),
-                    file_type: match stat.file_type {
-                        common::file_metadata::FileType::File => FileType::File as i32,
-                        common::file_metadata::FileType::Directory => FileType::Directory as i32,
-                    },
-                    size: stat.size,
-                    modified_at: stat.modified_at.timestamp(),
-                };
+            Ok(metadata) => {
+                let file_metadata_proto = metadata.into();
 
-                Ok(Response::new(StatResponse { entry: Some(entry) }))
+                Ok(Response::new(StatResponse {
+                    entry: Some(file_metadata_proto),
+                }))
             }
             Err(e) => Err(Status::not_found(format!(
                 "Failed to get file status: {}",
@@ -215,7 +190,7 @@ impl FileService for ArustioFileService {
         request: Request<MkdirRequest>,
     ) -> Result<Response<MkdirResponse>, Status> {
         let req = request.into_inner();
-        tracing::info!("Received mkdir request: path={}", req.path);
+        tracing::debug!("Received mkdir request: path={}", req.path);
 
         let vfs = self.vfs.read().await;
         match vfs.mkdir(&req.path).await {
@@ -248,7 +223,7 @@ impl FileService for ArustioFileService {
             _ => return Err(Status::invalid_argument("First message must be metadata")),
         };
 
-        tracing::info!(
+        tracing::debug!(
             "Receiving file upload: path={}, size={} bytes",
             metadata.destination_path,
             metadata.file_size
@@ -271,98 +246,50 @@ impl FileService for ArustioFileService {
         }
 
         // TODO: DELETE THIS LOG
-        tracing::info!("Completed receiving file upload:");
+        tracing::debug!("Completed receiving file upload:");
 
         let vfs = self.vfs.read().await;
         let bytes_written = buffer.len() as u64;
 
         // TODO: DELETE THIS LOG
-        tracing::info!("Completed receiving file upload READ:");
+        tracing::debug!("Completed receiving file upload READ:");
 
-        match vfs
-            .create(&metadata.destination_path, Bytes::from(buffer))
-            .await
-        {
-            Ok(_) => Ok(Response::new(CopyFromLocalResponse {
-                success: true,
-                message: format!(
-                    "Successfully uploaded file to {}",
-                    metadata.destination_path
-                ),
-                bytes_written,
-            })),
-            Err(e) => Ok(Response::new(CopyFromLocalResponse {
-                success: false,
-                message: format!("Failed to upload file: {}", e),
-                bytes_written: 0,
-            })),
-        }
+        Ok(Response::new(CopyFromLocalResponse {
+            success: true,
+            message: format!("NOOP file to {}", metadata.destination_path),
+            bytes_written,
+        }))
+        // match vfs
+        //     .create(&metadata.destination_path, Bytes::from(buffer))
+        //     .await
+        // {
+        //     Ok(_) => Ok(Response::new(CopyFromLocalResponse {
+        //         success: true,
+        //         message: format!(
+        //             "Successfully uploaded file to {}",
+        //             metadata.destination_path
+        //         ),
+        //         bytes_written,
+        //     })),
+        //     Err(e) => Ok(Response::new(CopyFromLocalResponse {
+        //         success: false,
+        //         message: format!("Failed to upload file: {}", e),
+        //         bytes_written: 0,
+        //     })),
+        // }
     }
 
-    type CopyToLocalStream = ReceiverStream<Result<CopyToLocalResponse, Status>>;
+    type ReadStream = ReceiverStream<Result<ReadResponse, Status>>;
 
-    async fn copy_to_local(
+    async fn read(
         &self,
-        request: Request<CopyToLocalRequest>,
-    ) -> Result<Response<Self::CopyToLocalStream>, Status> {
+        request: Request<ReadRequest>,
+    ) -> Result<Response<Self::ReadStream>, Status> {
         let req = request.into_inner();
-        tracing::info!("Received download request: path={}", req.source_path);
+        tracing::debug!("Received download request: path={}", req.path);
 
         let vfs = self.vfs.read().await;
-        let data = vfs
-            .read(&req.source_path)
-            .await
-            .map_err(|e| Status::not_found(format!("Failed to read file: {}", e)))?;
-
-        let (tx, rx) = tokio::sync::mpsc::channel(128);
-
-        tokio::spawn(async move {
-            // Send metadata first
-            let metadata = common::file::CopyToLocalMetadata {
-                file_size: data.len() as u64,
-            };
-
-            if tx
-                .send(Ok(CopyToLocalResponse {
-                    data: Some(common::file::copy_to_local_response::Data::Metadata(
-                        metadata,
-                    )),
-                }))
-                .await
-                .is_err()
-            {
-                return;
-            }
-
-            // Send data in chunks
-            const CHUNK_SIZE: usize = 64 * 1024; // 64KB chunks
-            for chunk in data.chunks(CHUNK_SIZE) {
-                let response = CopyToLocalResponse {
-                    data: Some(common::file::copy_to_local_response::Data::Chunk(
-                        chunk.to_vec(),
-                    )),
-                };
-
-                if tx.send(Ok(response)).await.is_err() {
-                    break;
-                }
-            }
-        });
-
-        Ok(Response::new(ReceiverStream::new(rx)))
-    }
-
-    type ReadFileStream = ReceiverStream<Result<ReadFileResponse, Status>>;
-
-    async fn read_file(
-        &self,
-        request: Request<ReadFileRequest>,
-    ) -> Result<Response<Self::ReadFileStream>, Status> {
-        let req = request.into_inner();
-        tracing::info!("Received read file request: path={}", req.path);
-
-        let vfs = self.vfs.read().await;
-        let data = vfs
+        let (file_metadata, mut stream) = vfs
             .read(&req.path)
             .await
             .map_err(|e| Status::not_found(format!("Failed to read file: {}", e)))?;
@@ -370,19 +297,127 @@ impl FileService for ArustioFileService {
         let (tx, rx) = tokio::sync::mpsc::channel(128);
 
         tokio::spawn(async move {
-            const CHUNK_SIZE: usize = 64 * 1024;
-            for chunk in data.chunks(CHUNK_SIZE) {
-                let response = ReadFileResponse {
-                    chunk: chunk.to_vec(),
-                };
-
-                if tx.send(Ok(response)).await.is_err() {
-                    break;
+            if tx
+                .send(Ok(ReadResponse {
+                    data: Some(common::file::read_response::Data::Metadata(
+                        file_metadata.into(),
+                    )),
+                }))
+                .await
+                .is_err()
+            {
+                return;
+            }
+            while let Some(item) = stream.next().await {
+                match item {
+                    Ok(chunk) => {
+                        let mut offset_in_block = 0u64;
+                        let mut buf = vec![0u8; TRANSPORT_CHUNK_SIZE];
+                        while offset_in_block < chunk.len() as u64 {
+                            let end = std::cmp::min(
+                                offset_in_block + TRANSPORT_CHUNK_SIZE as u64,
+                                chunk.len() as u64,
+                            );
+                            let len = (end - offset_in_block) as usize;
+                            buf[..len]
+                                .copy_from_slice(&chunk[offset_in_block as usize..end as usize]);
+                            let response = ReadResponse {
+                                data: Some(common::file::read_response::Data::Chunk(
+                                    buf[..len].to_vec(),
+                                )),
+                            };
+                            if tx.send(Ok(response)).await.is_err() {
+                                return;
+                            }
+                            offset_in_block += len as u64;
+                        }
+                    }
+                    Err(e) => {
+                        let _ = tx
+                            .send(Err(Status::internal(format!(
+                                "Error reading file chunk: {}",
+                                e
+                            ))))
+                            .await;
+                        break;
+                    }
                 }
             }
         });
+        let out_stream = ReceiverStream::new(rx);
 
-        Ok(Response::new(ReceiverStream::new(rx)))
+        Ok(Response::new(out_stream))
+    }
+
+    type ReadBlockStream = ReceiverStream<Result<ReadBlockResponse, Status>>;
+    async fn read_block(
+        &self,
+        request: Request<ReadBlockRequest>,
+    ) -> Result<Response<Self::ReadBlockStream>, Status> {
+        let req = request.into_inner();
+        tracing::debug!(
+            "Received read block request: path={}, file_id={}, block_index={}",
+            req.path,
+            req.file_id,
+            req.block_desc.as_ref().map_or(0, |b| b.index)
+        );
+
+        let block_desc = match req.block_desc {
+            Some(b) => b.try_into().map_err(|e| {
+                Status::invalid_argument(format!("Invalid block description: {}", e))
+            })?,
+            None => {
+                return Err(Status::invalid_argument("Block description is required"));
+            }
+        };
+
+        let file_id = uuid::Uuid::parse_str(&req.file_id)
+            .map_err(|e| Status::invalid_argument(format!("Invalid file ID: {}", e)))?;
+        let vfs = self.vfs.read().await;
+        let mut stream = vfs
+            .read_block(&req.path, file_id, block_desc)
+            .await
+            .map_err(|e| Status::not_found(format!("Failed to read file block: {}", e)))?;
+        let (tx, rx) = tokio::sync::mpsc::channel(128);
+
+        tokio::spawn(async move {
+            while let Some(item) = stream.next().await {
+                match item {
+                    Ok(chunk) => {
+                        let mut offset_in_block = 0u64;
+                        let mut buf = vec![0u8; TRANSPORT_CHUNK_SIZE];
+                        while offset_in_block < chunk.len() as u64 {
+                            let end = std::cmp::min(
+                                offset_in_block + TRANSPORT_CHUNK_SIZE as u64,
+                                chunk.len() as u64,
+                            );
+                            let len = (end - offset_in_block) as usize;
+                            buf[..len]
+                                .copy_from_slice(&chunk[offset_in_block as usize..end as usize]);
+                            let response = ReadBlockResponse {
+                                chunk: buf[..len].to_vec(),
+                            };
+                            if tx.send(Ok(response)).await.is_err() {
+                                return;
+                            }
+                            offset_in_block += len as u64;
+                        }
+                    }
+                    Err(e) => {
+                        let _ = tx
+                            .send(Err(Status::internal(format!(
+                                "Error reading file block chunk: {}",
+                                e
+                            ))))
+                            .await;
+                        break;
+                    }
+                }
+            }
+        });
+        let out_stream = ReceiverStream::new(rx);
+
+        Ok(Response::new(out_stream))
     }
 
     async fn write_file(
@@ -403,7 +438,7 @@ impl FileService for ArustioFileService {
             _ => return Err(Status::invalid_argument("First message must be metadata")),
         };
 
-        tracing::info!("Receiving file write: path={}", metadata.path);
+        tracing::debug!("Receiving file write: path={}", metadata.path);
 
         let mut buffer = Vec::new();
 
@@ -438,12 +473,85 @@ impl FileService for ArustioFileService {
         }
     }
 
+    async fn write_block(
+        &self,
+        request: Request<tonic::Streaming<WriteBlockRequest>>,
+    ) -> Result<Response<WriteBlockResponse>, Status> {
+        let mut stream = request.into_inner();
+
+        // Read first message for metadata
+        let first_msg = stream
+            .message()
+            .await
+            .map_err(|e| Status::internal(format!("Failed to receive metadata: {}", e)))?
+            .ok_or_else(|| Status::invalid_argument("Empty stream"))?;
+
+        let metadata = match first_msg.data {
+            Some(common::file::write_block_request::Data::Metadata(m)) => m,
+            _ => return Err(Status::invalid_argument("First message must be metadata")),
+        };
+
+        tracing::debug!(
+            "Receiving block write: path={}, file_id={}, block_index={}",
+            metadata.path,
+            metadata.file_id,
+            metadata.block_desc.as_ref().map_or(0, |b| b.index)
+        );
+
+        let block_desc = match metadata.block_desc {
+            Some(b) => b.try_into().map_err(|e| {
+                Status::invalid_argument(format!("Invalid block description: {}", e))
+            })?,
+            None => {
+                return Err(Status::invalid_argument("Block description is required"));
+            }
+        };
+
+        let file_id = uuid::Uuid::parse_str(&metadata.file_id)
+            .map_err(|e| Status::invalid_argument(format!("Invalid file ID: {}", e)))?;
+
+        let mut buffer = Vec::new();
+
+        // Read chunks
+        while let Some(msg) = stream
+            .message()
+            .await
+            .map_err(|e| Status::internal(format!("Failed to receive chunk: {}", e)))?
+        {
+            match msg.data {
+                Some(common::file::write_block_request::Data::Chunk(chunk)) => {
+                    buffer.extend_from_slice(&chunk);
+                }
+                _ => return Err(Status::invalid_argument("Unexpected message type")),
+            }
+        }
+
+        let vfs = self.vfs.read().await;
+        let bytes_written = buffer.len() as u64;
+
+        match vfs
+            .write_block(&metadata.path, file_id, block_desc, Bytes::from(buffer))
+            .await
+        {
+            Ok(_) => Ok(Response::new(WriteBlockResponse {
+                success: true,
+                message: format!("Successfully wrote block for file_id {}", metadata.file_id),
+                bytes_written,
+            })),
+            Err(e) => Ok(Response::new(WriteBlockResponse {
+                success: false,
+                message: format!("Failed to write block: {}", e),
+                bytes_written: 0,
+            })),
+        }
+    }
+
     async fn remove_file(
         &self,
         request: Request<RemoveFileRequest>,
     ) -> Result<Response<RemoveFileResponse>, Status> {
         let req = request.into_inner();
-        tracing::info!("Received remove file request: path={}", req.path);
+        tracing::debug!("Received remove file request: path={}", req.path);
 
         let vfs = self.vfs.read().await;
         match vfs.remove_file(&req.path).await {
@@ -463,7 +571,7 @@ impl FileService for ArustioFileService {
         request: Request<RemoveDirRequest>,
     ) -> Result<Response<RemoveDirResponse>, Status> {
         let req = request.into_inner();
-        tracing::info!("Received remove directory request: path={}", req.path);
+        tracing::debug!("Received remove directory request: path={}", req.path);
 
         let vfs = self.vfs.read().await;
         match vfs.remove_dir(&req.path).await {

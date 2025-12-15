@@ -1,5 +1,7 @@
 use crate::raft::rocks_store::RocksStorage;
-use crate::utils::{kv_key_mount_path, kv_key_path, u64be_bytes};
+use crate::utils::{
+    kv_cache_meta_key, kv_cache_node_key, kv_key_mount_path, kv_key_path, u64be_bytes,
+};
 use common::Result;
 use common::meta::MetaCmd;
 use common::meta::Mount;
@@ -8,7 +10,7 @@ use prost::Message;
 use rocksdb::WriteBatch;
 
 pub fn apply_to_kv(st: &RocksStorage, cmd: MetaCmd) -> Result<()> {
-    tracing::info!("Applying MetaCmd to KV store: {:?}", cmd);
+    tracing::debug!("Applying MetaCmd to KV store: {:?}", cmd);
 
     let mut wb = WriteBatch::default();
     match cmd.op {
@@ -54,6 +56,39 @@ pub fn apply_to_kv(st: &RocksStorage, cmd: MetaCmd) -> Result<()> {
                     return Err(common::Error::Internal("FileMetadata is None".to_string()));
                 }
             }
+        }
+        Some(Op::AddCacheNode(a)) => {
+            let mut val = Vec::new();
+            match &a.node {
+                Some(node) => {
+                    let key = kv_cache_node_key(node.node_id.clone());
+                    node.encode(&mut val).map_err(|e| {
+                        common::Error::Internal(format!("Failed to encode CacheNode entry: {}", e))
+                    })?;
+                    wb.put_cf(&st.cf_kv, key, val);
+                }
+                None => {
+                    return Err(common::Error::Internal(
+                        "CacheNode is None in AddCacheNode".to_string(),
+                    ));
+                }
+            }
+        }
+        Some(Op::RemoveCacheNode(r)) => {
+            let key = kv_cache_node_key(r.node_id);
+            wb.delete_cf(&st.cf_kv, key);
+        }
+        Some(Op::UpdateCacheNodeStatus(u)) => {
+            // No-op for now; implement as needed
+        }
+        Some(Op::PutCacheMeta(p)) => {
+            let file_id = p.file_id.clone();
+            let key = kv_cache_meta_key(file_id, p.index);
+            let mut val = Vec::new();
+            p.encode(&mut val).map_err(|e| {
+                common::Error::Internal(format!("Failed to encode PutCacheMeta entry: {}", e))
+            })?;
+            wb.put_cf(&st.cf_kv, key, val);
         }
         None => {
             tracing::warn!("Received MetaCmd with no operation");

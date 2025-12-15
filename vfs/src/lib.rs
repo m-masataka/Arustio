@@ -11,12 +11,16 @@
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use common::{Result, file_metadata::FileStatus};
+use common::{
+    Result,
+    file_metadata::{BlockDesc, FileMetadata},
+};
+use futures::stream::BoxStream;
 
-mod lib_mount;
-pub mod operations;
-
-pub use lib_mount::VirtualFsWithMounts;
+pub mod block_accessor;
+pub mod cache;
+mod vfs;
+pub use vfs::VirtualFileSystem;
 
 /// Trait for filesystem operations
 #[async_trait]
@@ -24,20 +28,34 @@ pub trait FileSystem: Send + Sync {
     /// Create a directory
     async fn mkdir(&self, path: &str) -> Result<()>;
 
-    /// Create a file
-    async fn create(&self, path: &str, data: Bytes) -> Result<()>;
-
     /// Read a file
-    async fn read(&self, path: &str) -> Result<Bytes>;
+    async fn read(&self, path: &str) -> Result<(FileMetadata, BoxStream<'static, Result<Bytes>>)>;
+
+    /// Read blocks of a file
+    async fn read_block(
+        &self,
+        path: &str,
+        file_id: uuid::Uuid,
+        block_desc: BlockDesc,
+    ) -> Result<BoxStream<'static, Result<Bytes>>>;
 
     /// Write to a file (overwrites existing content)
     async fn write(&self, path: &str, data: Bytes) -> Result<()>;
 
+    /// Write blocks to a file
+    async fn write_block(
+        &self,
+        path: &str,
+        file_id: uuid::Uuid,
+        block_desc: BlockDesc,
+        data: Bytes,
+    ) -> Result<()>;
+
     /// Get file/directory status
-    async fn stat(&self, path: &str) -> Result<FileStatus>;
+    async fn stat(&self, path: &str) -> Result<FileMetadata>;
 
     /// List directory contents
-    async fn list(&self, path: &str) -> Result<Vec<FileStatus>>;
+    async fn list(&self, path: &str) -> Result<Vec<FileMetadata>>;
 
     /// Remove a file
     async fn remove_file(&self, path: &str) -> Result<()>;
