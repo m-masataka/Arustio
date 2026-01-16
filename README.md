@@ -56,6 +56,28 @@ A high-performance, distributed file system built in Rust, inspired by Alluxio. 
         └───────────┘   └─────────────┘   └───────────┘
 ```
 
+### Metadata Layer (Raft + RocksDB)
+
+Arustio persists the namespace tree, file metadata, and mount table through a Raft-backed metadata service. Each node embeds a RocksDB instance that stores:
+
+- File metadata records keyed by normalized path and UUID
+- Mount definitions (VFS path → UFS configuration)
+- Cache node information and lease metadata
+
+Writes flow through the `RaftClient`, which contacts the current leader and replicates a `MetaCmd` entry. Followers apply entries via `apply_to_kv`, ensuring every node converges to the same metadata view. Reads can be linearized by sending them through the `LinearizableReadHandle`, allowing strict consistency when required.
+
+### Cache Layer
+
+To reduce repeated reads from remote object stores, the Virtual File System talks to a distributed cache tier. Each cache node registers itself via the metadata Raft log (`AddCacheNode` command). The `CacheManager` periodically fetches the latest node list, builds a consistent hash ring, and exposes APIs to store or retrieve byte ranges. Reads follow this flow:
+
+1. `BlockAccessor` plans block boundaries (`CHUNK_SIZE`) for a file and maps each block to a cache node using the hash ring.
+2. `CacheManager` attempts to serve requested blocks from the local in-process cache (Moka). Misses fall back to the owning cache node or the backing UFS.
+3. Cache writes propagate asynchronously, so UFS remains the source of truth while cached blocks speed up hot paths.
+
+This design lets the cluster scale horizontally: more cache nodes simply join the ring, and Raft metadata ensures every server instance observes the same membership list.
+
+For additional detail on each subsystem, see `docs/architecture.md`.
+
 ## Project Structure
 
 - **common**: Common types, error handling, and utilities
