@@ -6,6 +6,7 @@ pub mod ufs;
 pub mod vfs;
 pub mod cache;
 pub mod block;
+pub mod cmd;
 
 // Generated gRPC code
 pub mod mount {

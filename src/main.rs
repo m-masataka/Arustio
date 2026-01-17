@@ -16,7 +16,14 @@ use arustio::{
     }, server::{
         file_server::{ArustioFileService, ArustioMountService},
         raft_server::start_raft_server,
-    }, vfs::virtual_file_system::VirtualFileSystem
+    },
+    vfs::virtual_file_system::VirtualFileSystem,
+    cmd::{
+        fs_command::FsCommands,
+        handler::{
+            handle_fs_command,
+        }
+    },
 };
 
 #[derive(Parser)]
@@ -62,6 +69,15 @@ enum Commands {
         /// Block node endpoint URL for this instance
         #[arg(long)]
         block_node_url: Option<String>,
+    },
+    /// File system operations
+    Fs {
+        #[command(subcommand)]
+        fs_command: FsCommands,
+
+        /// Server address to connect to
+        #[arg(short, long, default_value = "http://localhost:50051")]
+        server: String,
     },
 }
 
@@ -112,6 +128,10 @@ async fn main() -> Result<()> {
                 raft_node_id,
             )
             .await
+        },
+        Commands::Fs { fs_command, server } => {
+            let _ = handle_fs_command(fs_command, &server).await;
+            Ok(())
         }
     }
 }
@@ -187,17 +207,15 @@ async fn run_server(
         ));
 
         // Spawn BlockManager maintenance task
-        // {
-        //     let block_manager = block_manager.clone();
-        //     tokio::spawn(async move {
-        //         loop {
-        //             if let Err(e) = block_manager.run_maintenance().await {
-        //                 tracing::error!("BlockManager maintenance error: {}", e);
-        //             }
-        //             tokio::time::sleep(std::time::Duration::from_secs(10)).await;
-        //         }
-        //     });
-        // }
+        {
+            let block_manager = block_manager.clone();
+            tokio::spawn(async move {
+                loop {
+                    block_manager.run_maintenance().await;
+                    tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+                }
+            });
+        }
 
         tracing::info!("Starting gRPC file server ...");
 
