@@ -11,7 +11,10 @@ use arustio::{
         virtual_file_system::VirtualFileSystem as ClientFileSystem,
     },
     cmd::{fs_command::FsCommands, handler::handle_fs_command},
-    common::{Error, NodeConfig, Result, raft_client::RaftClient},
+    common::{
+        Error, NodeConfig, Result, RuntimeConfig, cache_capacity_bytes, raft_client::RaftClient,
+        set_runtime_config,
+    },
     metadata::{
         RocksMetadataStore,
         metadata::MetadataStore,
@@ -164,6 +167,7 @@ async fn run_server(
     let node_cfg = NodeConfig::from_file(&config_path)
         .map_err(|e| Error::Internal(format!("NodeConfig::from_file: {e}")))?;
     tracing::debug!("Loaded config: {:?}", node_cfg);
+    set_runtime_config(RuntimeConfig::from(&node_cfg));
     let listen_addr = node_cfg
         .fs_listen
         .parse()
@@ -181,8 +185,7 @@ async fn run_server(
     };
     ring_nodes.push(block_node_id.clone());
 
-    let capacity_bytes = 0;
-    let cache_manager = Arc::new(CacheManager::new(capacity_bytes));
+    let cache_manager = Arc::new(CacheManager::new(cache_capacity_bytes()));
 
     tracing::info!(
         "Starting file server on {} (Raft enabled: {})",

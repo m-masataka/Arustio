@@ -1,6 +1,9 @@
 self_id = 1
 raft_listen = "0.0.0.0:50051"
 fs_listen = "0.0.0.0:50052"
+cache_capacity_bytes = 536870912
+block_size_bytes = 4194304
+grpc_chunk_size_bytes = 1048576
 
 [[peers]]
 id = 1

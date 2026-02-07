@@ -6,9 +6,6 @@ use crate::{
     metadata::metadata::MetadataStore,
 };
 
-pub const DEFAULT_CAPACITY: u64 = 512 * 1024 * 1024;
-pub const CHUNK_SIZE: usize = 4 * 1024 * 1024;
-
 pub struct BlockManager {
     self_node: BlockNode,
     metadata_store: Arc<dyn MetadataStore>,

@@ -5,7 +5,7 @@ use crate::{
         write_block_request,
     },
     cache::manager::CacheManager,
-    common::Error as ArustioError,
+    common::{Error as ArustioError, grpc_chunk_size_bytes},
 };
 use std::sync::Arc;
 use tokio_stream::wrappers::ReceiverStream;
@@ -25,8 +25,6 @@ impl BlockNodeServiceImpl {
         BlockNodeServiceServer::new(self)
     }
 }
-
-const TRANSPORT_CHUNK_SIZE: usize = 1 * 1024 * 1024;
 
 #[tonic::async_trait]
 impl BlockNodeService for BlockNodeServiceImpl {
@@ -52,8 +50,9 @@ impl BlockNodeService for BlockNodeServiceImpl {
                 let (tx, rx) = tokio::sync::mpsc::channel(128);
                 let mut start = 0;
                 let data_len = block_data.len();
+                let chunk_size = grpc_chunk_size_bytes();
                 while start < data_len {
-                    let end = std::cmp::min(start + TRANSPORT_CHUNK_SIZE, data_len);
+                    let end = std::cmp::min(start + chunk_size, data_len);
                     let chunk = block_data.slice(start..end);
                     let response = ReadBlockResponse {
                         data: chunk.to_vec(),

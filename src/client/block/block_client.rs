@@ -8,7 +8,7 @@ use crate::{
         write_block_request, {ReadBlockRequest, WriteBlockRequest},
     },
     client::{cache_client::CacheClient, metadata_client::MetadataClient},
-    common::{Error, Result},
+    common::{Error, Result, grpc_chunk_size_bytes},
 };
 use bytes::{Bytes, BytesMut};
 use futures::stream;
@@ -148,7 +148,7 @@ impl CacheClient for BlockNodeClient {
             data.len()
         );
 
-        const CHUNK_SIZE: usize = 1 * 1024 * 1024; // 1 MB
+        let chunk_size = grpc_chunk_size_bytes();
         let first = WriteBlockRequest {
             data: Some(write_block_request::Data::FileId(FileId {
                 id: file_id.to_string(),
@@ -157,8 +157,8 @@ impl CacheClient for BlockNodeClient {
         };
 
         let data = data.clone();
-        let chunks = (0..data.len()).step_by(CHUNK_SIZE).map(move |i| {
-            let end = (i + CHUNK_SIZE).min(data.len());
+        let chunks = (0..data.len()).step_by(chunk_size).map(move |i| {
+            let end = (i + chunk_size).min(data.len());
             let piece = data.slice(i..end);
 
             WriteBlockRequest {

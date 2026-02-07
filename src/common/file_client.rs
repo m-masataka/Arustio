@@ -1,15 +1,13 @@
 use futures::stream;
 use tonic::Request;
 
-use crate::common::error::Result;
+use crate::common::{error::Result, grpc_chunk_size_bytes};
 use crate::core::file_metadata::BlockDesc;
 use crate::file::{
     ReadBlockRequest, WriteBlockMetadata, WriteBlockRequest,
     file_service_client::FileServiceClient, write_block_request,
 };
 use std::io;
-
-const TRANSPORT_CHUNK_SIZE: usize = 1 * 1024 * 1024;
 
 #[derive(Clone)]
 pub struct FileClient {}
@@ -105,9 +103,10 @@ impl FileClient {
         };
         requests.push(metadata);
 
-        let mut offset = 0;
+        let mut offset: usize = 0;
+        let chunk_size = grpc_chunk_size_bytes();
         while offset < total_size {
-            let end = offset + TRANSPORT_CHUNK_SIZE.min(total_size - offset);
+            let end = offset + chunk_size.min(total_size - offset);
             let chunk = data.slice(offset..end);
             let chunk_request = WriteBlockRequest {
                 data: Some(write_block_request::Data::Chunk(chunk.to_vec())),

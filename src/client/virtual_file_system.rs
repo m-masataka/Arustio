@@ -1,11 +1,10 @@
 //! Virtual File System with mount support
 
 use crate::{
-    block::manager::CHUNK_SIZE,
     client::{
         cache_client::CacheClient, metadata_client::MetadataClient, utils::plan_chunk_layout,
     },
-    common::{Error, Result, normalize_path, parent_path},
+    common::{Error, Result, block_size_bytes, normalize_path, parent_path},
     core::{
         file_metadata::{BlockDesc, FileMetadata, MountInfo},
         file_system::FileSystem,
@@ -603,6 +602,7 @@ impl FileSystem for VirtualFileSystem {
         let mut buf = BytesMut::new();
         let mut total: u64 = 0;
         let mut writer = ufs.open_multipart_write(&relative_path).await?;
+        let block_size = block_size_bytes();
 
         while let Some(chunk) = data.next().await {
             let bytes = chunk?;
@@ -612,12 +612,12 @@ impl FileSystem for VirtualFileSystem {
             writer.write(&bytes);
 
             while !remaining.is_empty() {
-                let space_in_block = CHUNK_SIZE - buf.len();
+                let space_in_block = block_size - buf.len();
                 let take_len = remaining.len().min(space_in_block);
                 buf.extend_from_slice(&remaining[..take_len]);
                 remaining = &remaining[take_len..];
 
-                if buf.len() == CHUNK_SIZE {
+                if buf.len() == block_size {
                     // Write to Cache
                     cache
                         .write_block(file_id, block_index, Bytes::from(buf.split().freeze()))

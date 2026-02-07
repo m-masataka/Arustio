@@ -9,7 +9,6 @@ use moka::future::Cache;
 use uuid::Uuid;
 
 pub const DEFAULT_CAPACITY: u64 = 512 * 1024 * 1024;
-pub const CHUNK_SIZE: usize = 4 * 1024 * 1024;
 
 #[derive(Clone, Debug, Eq)]
 struct ChunkKey {
