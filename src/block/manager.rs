@@ -1,10 +1,5 @@
-use std::{
-    hash::{Hash, Hasher},
-    sync::Arc,
-};
-
+use std::sync::Arc;
 use arc_swap::ArcSwap;
-use uuid::Uuid;
 
 use crate::{
     block::{hash_ring::HashRing, node::BlockNode},
@@ -14,24 +9,6 @@ use crate::{
 pub const DEFAULT_CAPACITY: u64 = 512 * 1024 * 1024;
 pub const CHUNK_SIZE: usize = 4 * 1024 * 1024;
 
-#[derive(Clone, Debug, Eq)]
-struct ChunkKey {
-    file_id: Uuid,
-    index: u64,
-}
-
-impl PartialEq for ChunkKey {
-    fn eq(&self, other: &Self) -> bool {
-        self.file_id == other.file_id && self.index == other.index
-    }
-}
-
-impl Hash for ChunkKey {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.file_id.hash(state);
-        self.index.hash(state);
-    }
-}
 
 pub struct BlockManager {
     self_node: BlockNode,

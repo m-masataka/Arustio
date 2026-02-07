@@ -1,4 +1,7 @@
-use std::sync::Arc;
+use std::{
+    collections::HashMap,
+    sync::Arc,
+};
 
 use crate::{
     common::{Result, Error},
@@ -6,6 +9,7 @@ use crate::{
         cache_client::CacheClient,
         metadata_client::MetadataClient,
     },
+    block::hash_ring::HashRing,
     blockio::{
         block_node_service_client::BlockNodeServiceClient,{
             ReadBlockRequest,
@@ -30,24 +34,40 @@ use bytes::{Bytes, BytesMut};
 #[derive(Clone)]
 pub struct BlockNodeClient {
     metadata: MetadataClient,
-    pool: Arc<RwLock<Vec<BlockNodeServiceClient<Channel>>>>,
+    pool: Arc<RwLock<Option<BlockNodePool>>>,
+}
+
+#[derive(Clone)]
+struct BlockNodePool {
+    ring: HashRing,
+    clients: HashMap<String, BlockNodeServiceClient<Channel>>,
+    fallback_id: String,
 }
 
 impl BlockNodeClient {
     pub fn new(metadata: MetadataClient) -> Self {
         Self {
             metadata,
-            pool: Arc::new(RwLock::new(Vec::new())),
+            pool: Arc::new(RwLock::new(None)),
         }
     }
 
     async fn select_node(&self, file_id: Uuid, index: u64) -> Result<BlockNodeServiceClient<Channel>> {
         let pool = self.pool.read().await;
-        if pool.is_empty() {
-            return Err(Error::Internal("No block nodes available".to_string()));
+        let pool = pool.as_ref().ok_or_else(|| Error::Internal("No block nodes available".to_string()))?;
+        let node_id = pool.ring.owner(file_id, index);
+        if let Some(client) = pool.clients.get(&node_id) {
+            return Ok(client.clone());
         }
-        // Simple round-robin selection
-        Ok(pool[0].clone())
+        if let Some(client) = pool.clients.get(&pool.fallback_id) {
+            tracing::warn!(
+                "Hash ring selected unknown node_id={}, falling back to {}",
+                node_id,
+                pool.fallback_id
+            );
+            return Ok(client.clone());
+        }
+        return Err(Error::Internal("No block nodes available".to_string()));
     }
 }
 
@@ -59,14 +79,18 @@ impl CacheClient for BlockNodeClient {
         if nodes.is_empty() {
             return Err(Error::Internal("No block nodes available".to_string()));
         }
-        let mut list = Vec::with_capacity(nodes.len());
+        let mut clients = HashMap::with_capacity(nodes.len());
+        let mut node_ids = Vec::with_capacity(nodes.len());
         for node in nodes {
             let client = BlockNodeServiceClient::connect(node.url.clone())
                 .await
                 .map_err(|e| Error::Internal(format!("Failed to connect to block node {}: {}", node.node_id, e)))?;
-            list.push(client);
+            node_ids.push(node.node_id.clone());
+            clients.insert(node.node_id, client);
         }
-        *self.pool.write().await = list;
+        let fallback_id = node_ids[0].clone();
+        let ring = HashRing::new(node_ids);
+        *self.pool.write().await = Some(BlockNodePool { ring, clients, fallback_id });
         Ok(())
     }
 
