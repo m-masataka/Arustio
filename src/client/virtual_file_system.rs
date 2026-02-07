@@ -1,24 +1,23 @@
 //! Virtual File System with mount support
 
+use crate::{
+    block::manager::CHUNK_SIZE,
+    client::{
+        cache_client::CacheClient, metadata_client::MetadataClient, utils::plan_chunk_layout,
+    },
+    common::{Error, Result, normalize_path, parent_path},
+    core::{
+        file_metadata::{BlockDesc, FileMetadata, MountInfo},
+        file_system::FileSystem,
+    },
+    ufs::{
+        config::UfsConfig,
+        under_file_system::{Ufs, UfsOperations},
+    },
+};
 use async_stream::try_stream;
 use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
-use crate::{
-    common::{
-        Error, Result, normalize_path, parent_path
-    }, core::{
-        file_metadata::{BlockDesc, FileMetadata, MountInfo},
-        file_system::FileSystem,
-    }, ufs::{
-        config::UfsConfig, under_file_system::{Ufs, UfsOperations}
-    },
-    client::{
-        metadata_client::MetadataClient,
-        cache_client::CacheClient,
-        utils::plan_chunk_layout,
-    },
-    block::manager::CHUNK_SIZE,
-};
 
 use futures::{
     StreamExt,
@@ -36,14 +35,27 @@ struct HitRateTracker {
 
 impl HitRateTracker {
     fn new(path: String, file_id: uuid::Uuid) -> Self {
-        Self { path, file_id, hits: 0, misses: 0 }
+        Self {
+            path,
+            file_id,
+            hits: 0,
+            misses: 0,
+        }
     }
-    fn hit(&mut self) { self.hits += 1; }
-    fn miss(&mut self) { self.misses += 1; }
+    fn hit(&mut self) {
+        self.hits += 1;
+    }
+    fn miss(&mut self) {
+        self.misses += 1;
+    }
 
     fn rate(&self) -> f64 {
         let total = self.hits + self.misses;
-        if total == 0 { 0.0 } else { (self.hits as f64) / (total as f64) }
+        if total == 0 {
+            0.0
+        } else {
+            (self.hits as f64) / (total as f64)
+        }
     }
 }
 
@@ -71,10 +83,7 @@ pub struct VirtualFileSystem {
 
 impl VirtualFileSystem {
     /// Create a new Virtual File System with mount support
-    pub fn new(
-        metadata_client: MetadataClient,
-        cache: Arc<dyn CacheClient>,
-    ) -> Self {
+    pub fn new(metadata_client: MetadataClient, cache: Arc<dyn CacheClient>) -> Self {
         Self {
             metadata_client,
             cache,
@@ -151,8 +160,7 @@ impl VirtualFileSystem {
 
         // Check if directory or file exists at the mount point
         {
-            match self.metadata_client.get(normalized_path.clone()).await
-            {
+            match self.metadata_client.get(normalized_path.clone()).await {
                 Ok(Some(_)) => {
                     return Err(Error::PathAlreadyExists(format!(
                         "Path {} already exists",
@@ -175,7 +183,12 @@ impl VirtualFileSystem {
         tracing::info!("Mounting UFS to {}", normalized_path);
 
         // Create Directory metadata if not exists
-        if self.metadata_client.get(normalized_path.clone()).await?.is_none() {
+        if self
+            .metadata_client
+            .get(normalized_path.clone())
+            .await?
+            .is_none()
+        {
             self.mkdir(&normalized_path).await?;
         }
 
@@ -260,13 +273,23 @@ impl FileSystem for VirtualFileSystem {
         let normalized_path = normalize_path(path)?;
 
         // Check if already exists
-        if self.metadata_client.get(normalized_path.clone()).await?.is_some() {
+        if self
+            .metadata_client
+            .get(normalized_path.clone())
+            .await?
+            .is_some()
+        {
             return Err(Error::PathAlreadyExists(normalized_path));
         }
 
         // Create root directory if not exists
         let root_path = "/";
-        if self.metadata_client.get(root_path.to_string()).await?.is_none() {
+        if self
+            .metadata_client
+            .get(root_path.to_string())
+            .await?
+            .is_none()
+        {
             let metadata = FileMetadata::new_directory(root_path.to_string(), None);
             self.metadata_client.put(metadata).await?;
         }
@@ -295,7 +318,7 @@ impl FileSystem for VirtualFileSystem {
         Ok(())
     }
 
-    async fn read(&self, path: &str) -> Result<(FileMetadata, BoxStream<'static, Result<Bytes>>)>  {
+    async fn read(&self, path: &str) -> Result<(FileMetadata, BoxStream<'static, Result<Bytes>>)> {
         let normalized_path = normalize_path(path)?;
         let (ufs, relative_path, _mount_path) = self.get_mount_for_path(&normalized_path).await?;
         if let Some(metadata) = self.metadata_client.get(normalized_path.clone()).await? {
@@ -540,10 +563,7 @@ impl FileSystem for VirtualFileSystem {
     async fn write(&self, path: &str, mut data: BoxStream<'static, Result<Bytes>>) -> Result<()> {
         let normalized_path = normalize_path(path)?;
 
-        let metadata = self
-            .metadata_client
-            .get(normalized_path.clone())
-            .await?;
+        let metadata = self.metadata_client.get(normalized_path.clone()).await?;
 
         let mut metadata = match metadata {
             Some(meta) => meta,
@@ -564,12 +584,7 @@ impl FileSystem for VirtualFileSystem {
                 } else {
                     None
                 };
-                FileMetadata::new_file(
-                    normalized_path.clone(),
-                    0,
-                    parent_id,
-                    None,
-                )
+                FileMetadata::new_file(normalized_path.clone(), 0, parent_id, None)
             }
         };
 
@@ -588,7 +603,6 @@ impl FileSystem for VirtualFileSystem {
         let mut buf = BytesMut::new();
         let mut total: u64 = 0;
         let mut writer = ufs.open_multipart_write(&relative_path).await?;
-
 
         while let Some(chunk) = data.next().await {
             let bytes = chunk?;
@@ -626,7 +640,10 @@ impl FileSystem for VirtualFileSystem {
                     ))
                 })?;
         }
-        writer.finish().await.map_err(|e| Error::Internal(format!("Failed to finish write: {}", e)))?;
+        writer
+            .finish()
+            .await
+            .map_err(|e| Error::Internal(format!("Failed to finish write: {}", e)))?;
 
         metadata.size = total;
         metadata.modified_at = chrono::Utc::now();
@@ -717,7 +734,8 @@ impl FileSystem for VirtualFileSystem {
                 let mut metadata_names = std::collections::HashSet::new();
 
                 // Get existing metadata children
-                let existing_children = self.metadata_client.list_children(&dir_metadata.id).await?;
+                let existing_children =
+                    self.metadata_client.list_children(&dir_metadata.id).await?;
                 for child in &existing_children {
                     let name = child.path.rsplit('/').next().unwrap_or(&child.path);
                     metadata_names.insert(name.to_string());
@@ -775,7 +793,8 @@ impl FileSystem for VirtualFileSystem {
                     "No mount found for {}, returning metadata-only listing",
                     normalized_path
                 );
-                let existing_children = self.metadata_client.list_children(&dir_metadata.id).await?;
+                let existing_children =
+                    self.metadata_client.list_children(&dir_metadata.id).await?;
                 Ok(existing_children.into_iter().map(|child| child).collect())
             }
             Err(e) => Err(e),
@@ -837,6 +856,10 @@ impl FileSystem for VirtualFileSystem {
 
     async fn exists(&self, path: &str) -> Result<bool> {
         let normalized_path = normalize_path(path)?;
-        Ok(self.metadata_client.get(normalized_path.clone()).await?.is_some())
+        Ok(self
+            .metadata_client
+            .get(normalized_path.clone())
+            .await?
+            .is_some())
     }
 }

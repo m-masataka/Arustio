@@ -1,6 +1,7 @@
+use crate::raftio;
 use anyhow::Result;
 use async_trait::async_trait;
-use crate::raftio;
+use protobuf::Message as PbMessage;
 use raft::prelude::Message;
 use raft::prelude::Message as RaftMessage;
 use std::collections::HashMap;
@@ -8,7 +9,6 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio::sync::mpsc;
 use tonic::transport::Channel;
-use protobuf::Message as PbMessage;
 
 #[derive(Clone)]
 pub struct PeerStore {

@@ -7,10 +7,10 @@
 //! - Azure Blob Storage
 //! - Local filesystem (for testing)
 
+use crate::common::{Error, Result};
 use async_trait::async_trait;
 use bytes::Bytes;
-use crate::common::{Error, Result};
-use object_store::{WriteMultipart, ObjectMeta, ObjectStore, path::Path as ObjectPath};
+use object_store::{ObjectMeta, ObjectStore, WriteMultipart, path::Path as ObjectPath};
 use std::sync::Arc;
 
 use crate::ufs::config::UfsConfig;
@@ -66,7 +66,7 @@ impl Ufs {
     pub fn with_store(store: Arc<dyn ObjectStore>) -> Self {
         Self { store }
     }
-    
+
     /// Get Config of UFS
     pub fn get_config(&self) -> String {
         return format!("{:?}", self.store);
@@ -129,7 +129,7 @@ impl UfsOperations for Ufs {
     async fn open_multipart_write(&self, path: &str) -> Result<WriteMultipart> {
         // Convert Steram to multipart upload
         let object_path = Self::to_object_path(path);
-        let upload =  self.store.put_multipart(&object_path).await.unwrap();
+        let upload = self.store.put_multipart(&object_path).await.unwrap();
         Ok(WriteMultipart::new(upload))
     }
 

@@ -9,13 +9,11 @@
 //! - stat: Get file/directory status
 //! - rm: Remove files and directories
 
-use async_trait::async_trait;
-use bytes::Bytes;
-use crate::common::{
-    Result,
-};
+use crate::common::Result;
 use crate::core::file_metadata::{BlockDesc, FileMetadata};
 use crate::ufs::config::UfsConfig;
+use async_trait::async_trait;
+use bytes::Bytes;
 use futures::stream::BoxStream;
 
 /// Trait for filesystem operations
@@ -36,11 +34,7 @@ pub trait FileSystem: Send + Sync {
     ) -> Result<BoxStream<'static, Result<Bytes>>>;
 
     /// Write to a file (overwrites existing content)
-    async fn write(
-        &self,
-        path: &str,
-        data: BoxStream<'static, Result<Bytes>>,
-    ) -> Result<()>;
+    async fn write(&self, path: &str, data: BoxStream<'static, Result<Bytes>>) -> Result<()>;
 
     /// Write blocks to a file
     async fn write_block(

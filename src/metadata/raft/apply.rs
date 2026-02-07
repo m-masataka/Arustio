@@ -1,15 +1,8 @@
+use crate::common::{Error, Result};
+use crate::meta::{MetaCmd, Mount, meta_cmd::Op};
 use crate::metadata::raft::rocks_store::RocksStorage;
 use crate::metadata::utils::{
     kv_block_meta_key, kv_block_node_key, kv_key_mount_path, kv_key_path, u64be_bytes,
-};
-use crate::common::{
-    Result,
-    Error
-};
-use crate::meta::{
-    MetaCmd,
-    Mount,
-    meta_cmd::Op,
 };
 use prost::Message;
 use rocksdb::WriteBatch;
@@ -35,9 +28,9 @@ pub fn apply_to_kv(st: &RocksStorage, cmd: MetaCmd) -> Result<()> {
                 description: m.description,
             };
             let mut val = Vec::new();
-            mount_entry.encode(&mut val).map_err(|e| {
-                Error::Internal(format!("Failed to encode Mount entry: {}", e))
-            })?;
+            mount_entry
+                .encode(&mut val)
+                .map_err(|e| Error::Internal(format!("Failed to encode Mount entry: {}", e)))?;
             wb.put_cf(&st.cf_kv, key, val);
         }
         Some(Op::Unmount(u)) => {
@@ -50,10 +43,7 @@ pub fn apply_to_kv(st: &RocksStorage, cmd: MetaCmd) -> Result<()> {
             match &p.file_metadata {
                 Some(file_metadata) => {
                     file_metadata.encode(&mut val).map_err(|e| {
-                        Error::Internal(format!(
-                            "Failed to encode FileMetadata entry: {}",
-                            e
-                        ))
+                        Error::Internal(format!("Failed to encode FileMetadata entry: {}", e))
                     })?;
                     wb.put_cf(&st.cf_kv, key, val);
                 }

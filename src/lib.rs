@@ -1,12 +1,12 @@
-pub mod common;
+pub mod block;
+pub mod cache;
 pub mod client;
+pub mod cmd;
+pub mod common;
 pub mod core;
 pub mod metadata;
 pub mod server;
 pub mod ufs;
-pub mod cache;
-pub mod block;
-pub mod cmd;
 
 // Generated gRPC code
 pub mod mount {

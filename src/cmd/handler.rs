@@ -1,19 +1,16 @@
 use crate::{
-    client::virtual_file_system::VirtualFileSystem, cmd::fs_command::FsCommands, common::{
-        error::Error
-    },
+    client::virtual_file_system::VirtualFileSystem,
+    cmd::fs_command::FsCommands,
+    common::error::Error,
+    core::{file_metadata::FileType, file_system::FileSystem},
     ufs::config::{UfsConfig, parse_uri_to_config},
-    core::{
-        file_system::FileSystem,
-        file_metadata::FileType,
-    },
 };
 
+use bytes::Bytes;
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
 use tokio_stream::StreamExt;
 use tokio_util::io::ReaderStream;
-use bytes::Bytes;
 
 pub async fn handle_fs_command(command: FsCommands, vfs: VirtualFileSystem) -> anyhow::Result<()> {
     match command {
@@ -105,18 +102,11 @@ async fn handle_list_mounts(vfs: &VirtualFileSystem) -> anyhow::Result<()> {
             None => "".to_string(),
         };
         let (ufs_type, ufs_uri) = match ufs_config {
-            UfsConfig::S3 { bucket, .. } => (
-                "S3".to_string(),
-                format!("s3a://{}/", bucket.clone()),
-            ),
-            UfsConfig::Local { .. } => (
-                "Local".to_string(),
-                "local://".to_string(),
-            ),
-            other => (
-                "Other".to_string(),
-                format!("{:?}", other),
-            ),
+            UfsConfig::S3 { bucket, .. } => {
+                ("S3".to_string(), format!("s3a://{}/", bucket.clone()))
+            }
+            UfsConfig::Local { .. } => ("Local".to_string(), "local://".to_string()),
+            other => ("Other".to_string(), format!("{:?}", other)),
         };
         println!(
             "{:<30} {:<15} {:<50} {}",
@@ -128,7 +118,6 @@ async fn handle_list_mounts(vfs: &VirtualFileSystem) -> anyhow::Result<()> {
 }
 
 async fn handle_ls(path: String, long_format: bool, vfs: &VirtualFileSystem) -> anyhow::Result<()> {
-    
     let entries = vfs.list(&path).await?;
 
     if entries.is_empty() {
@@ -203,13 +192,9 @@ async fn handle_copy_from_local(
 ) -> anyhow::Result<()> {
     println!("Copying {} to {}", local_path, remote_path);
     let file = File::open(&local_path).await?;
-    let stream = ReaderStream::new(file)
-        .map(|r| r.map_err(|e| crate::common::error::Error::Io(e)));
+    let stream = ReaderStream::new(file).map(|r| r.map_err(|e| crate::common::error::Error::Io(e)));
     vfs.write(&remote_path, Box::pin(stream)).await?;
-    println!(
-        "Successfully uploaded {} to {}",
-        local_path, remote_path
-    );
+    println!("Successfully uploaded {} to {}", local_path, remote_path);
     Ok(())
 }
 
@@ -232,7 +217,7 @@ async fn handle_copy_to_local(
     println!("Downloading...");
     // Read chunks
     while let Some(chunk_res) = stream.next().await {
-        let chunk: Bytes = chunk_res?;     // stream の Err をここで返す
+        let chunk: Bytes = chunk_res?; // stream の Err をここで返す
         file.write_all(&chunk).await?;
     }
     file.flush().await?;

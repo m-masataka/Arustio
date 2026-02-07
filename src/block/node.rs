@@ -1,8 +1,8 @@
-use chrono::{DateTime, NaiveDateTime, Utc};
-use serde::{Serialize, Deserialize};
 use crate::common::Error;
 use crate::meta::BlockNodeInfo as ProtoBlockNodeInfo;
+use chrono::{DateTime, NaiveDateTime, Utc};
 use prost_types::Timestamp;
+use serde::{Deserialize, Serialize};
 
 fn prost_to_chrono(ts: &Timestamp) -> DateTime<Utc> {
     NaiveDateTime::from_timestamp_opt(ts.seconds, ts.nanos as u32)

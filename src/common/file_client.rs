@@ -1,15 +1,13 @@
 use futures::stream;
 use tonic::Request;
 
-use std::io;
-use crate::core::file_metadata::BlockDesc;
-use crate::file::{write_block_request, 
-    file_service_client::FileServiceClient,
-    ReadBlockRequest,
-    WriteBlockMetadata,
-    WriteBlockRequest
-};
 use crate::common::error::Result;
+use crate::core::file_metadata::BlockDesc;
+use crate::file::{
+    ReadBlockRequest, WriteBlockMetadata, WriteBlockRequest,
+    file_service_client::FileServiceClient, write_block_request,
+};
+use std::io;
 
 const TRANSPORT_CHUNK_SIZE: usize = 1 * 1024 * 1024;
 

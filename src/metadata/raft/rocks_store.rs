@@ -6,11 +6,11 @@ use raft::{Error as RaftError, Result as RaftResult, Storage};
 use rocksdb::{ColumnFamilyDescriptor, DBWithThreadMode, MultiThreaded, Options, WriteBatch};
 use std::sync::Arc;
 
+use crate::common::Error;
+use crate::meta::BlockNodeInfo;
+use crate::meta::FileMetadata;
 use crate::metadata::utils::BLOCK_NODE_PREFIX;
 use crate::metadata::utils::kv_key_path;
-use crate::common::Error;
-use crate::meta::FileMetadata;
-use crate::meta::BlockNodeInfo;
 
 const CF_RAFT_LOG: &str = "raft_log";
 const CF_RAFT_STATE: &str = "raft_state";
@@ -167,10 +167,7 @@ impl RocksStorage {
     }
 
     // Get FileMetadata for given path from KV CF
-    pub async fn get_file_metadata(
-        &self,
-        path: &str,
-    ) -> Result<Option<FileMetadata>> {
+    pub async fn get_file_metadata(&self, path: &str) -> Result<Option<FileMetadata>> {
         let key_bytes = kv_key_path(path);
         if let Some(value) = self.get_kv_value(&key_bytes)? {
             let file_metadata: FileMetadata =
@@ -195,10 +192,9 @@ impl RocksStorage {
             if !k.starts_with(BLOCK_NODE_PREFIX) {
                 break;
             }
-            let node_info: BlockNodeInfo = prost::Message::decode(v.as_ref())
-                .map_err(|e| {
-                    Error::Internal(format!("Failed to decode BlockNodeInfo entry: {}", e))
-                })?;
+            let node_info: BlockNodeInfo = prost::Message::decode(v.as_ref()).map_err(|e| {
+                Error::Internal(format!("Failed to decode BlockNodeInfo entry: {}", e))
+            })?;
             nodes.push(node_info);
         }
         Ok(nodes)

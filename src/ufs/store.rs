@@ -1,5 +1,5 @@
-use crate::ufs::config::UfsConfig;
 use crate::common::{Error, Result};
+use crate::ufs::config::UfsConfig;
 use object_store::ObjectStore;
 use std::sync::Arc;
 

@@ -1,19 +1,16 @@
 use crate::{
     blockio::{
-        ReadBlockRequest, ReadBlockResponse,
-        WriteBlockRequest, WriteBlockResponse,
-        block_node_service_server::{ BlockNodeService, BlockNodeServiceServer },
-        write_block_request
+        ReadBlockRequest, ReadBlockResponse, WriteBlockRequest, WriteBlockResponse,
+        block_node_service_server::{BlockNodeService, BlockNodeServiceServer},
+        write_block_request,
     },
     cache::manager::CacheManager,
     common::Error as ArustioError,
 };
 use std::sync::Arc;
-use tonic::{Request, Response, Status, Streaming};
 use tokio_stream::wrappers::ReceiverStream;
+use tonic::{Request, Response, Status, Streaming};
 use uuid::Uuid;
-
-
 
 pub struct BlockNodeServiceImpl {
     cache: Arc<CacheManager>,
@@ -31,14 +28,13 @@ impl BlockNodeServiceImpl {
 
 const TRANSPORT_CHUNK_SIZE: usize = 1 * 1024 * 1024;
 
-
 #[tonic::async_trait]
 impl BlockNodeService for BlockNodeServiceImpl {
     type ReadBlockStream = ReceiverStream<Result<ReadBlockResponse, Status>>;
     async fn read_block(
         &self,
         request: Request<ReadBlockRequest>,
-    ) ->  Result<Response<Self::ReadBlockStream>, Status>  {
+    ) -> Result<Response<Self::ReadBlockStream>, Status> {
         let req = request.into_inner();
         let block_id = req.file_id;
         let offset = req.index as u64;
@@ -50,10 +46,7 @@ impl BlockNodeService for BlockNodeServiceImpl {
         );
         let uuid = Uuid::parse_str(&block_id)
             .map_err(|e| Status::invalid_argument(format!("Invalid block ID: {}", e)))?;
-        let res_block_data = self
-            .cache
-            .read_block(uuid, offset)
-            .await;
+        let res_block_data = self.cache.read_block(uuid, offset).await;
         match res_block_data {
             Ok(block_data) => {
                 let (tx, rx) = tokio::sync::mpsc::channel(128);
@@ -62,11 +55,13 @@ impl BlockNodeService for BlockNodeServiceImpl {
                 while start < data_len {
                     let end = std::cmp::min(start + TRANSPORT_CHUNK_SIZE, data_len);
                     let chunk = block_data.slice(start..end);
-                    let response = ReadBlockResponse { data: chunk.to_vec() };
+                    let response = ReadBlockResponse {
+                        data: chunk.to_vec(),
+                    };
                     tx.send(Ok(response))
                         .await
                         .map_err(|e| Status::internal(format!("Failed to send chunk: {}", e)))?;
-                    start = end; 
+                    start = end;
                 }
                 Ok(Response::new(ReceiverStream::new(rx)))
             }
@@ -93,7 +88,7 @@ impl BlockNodeService for BlockNodeServiceImpl {
             _ => {
                 return Err(Status::invalid_argument(
                     "First message must contain block ID",
-                ))
+                ));
             }
         };
 
@@ -123,7 +118,11 @@ impl BlockNodeService for BlockNodeServiceImpl {
 
         let buffer_len = buffer.len();
 
-        match self.cache.store_block(block_id, file_id.index, buffer.into()).await {
+        match self
+            .cache
+            .store_block(block_id, file_id.index, buffer.into())
+            .await
+        {
             Ok(_) => {
                 tracing::debug!("Successfully wrote block {}", block_id);
                 let response = WriteBlockResponse {

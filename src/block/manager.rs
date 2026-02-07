@@ -1,5 +1,5 @@
-use std::sync::Arc;
 use arc_swap::ArcSwap;
+use std::sync::Arc;
 
 use crate::{
     block::{hash_ring::HashRing, node::BlockNode},
@@ -8,7 +8,6 @@ use crate::{
 
 pub const DEFAULT_CAPACITY: u64 = 512 * 1024 * 1024;
 pub const CHUNK_SIZE: usize = 4 * 1024 * 1024;
-
 
 pub struct BlockManager {
     self_node: BlockNode,
@@ -42,7 +41,7 @@ impl BlockManager {
             Ok(nodes) => nodes,
         };
 
-        // update block_nodes 
+        // update block_nodes
         self.block_nodes.store(Arc::new(nodes.clone()));
 
         let node_ids = nodes
@@ -66,7 +65,8 @@ impl BlockManager {
     pub async fn join_cache_ring(&self) {
         // TODO: UPDATE heartbeat timestamp periodically
         if let Err(e) = self
-            .metadata_store.put_block_node(self.self_node.clone())
+            .metadata_store
+            .put_block_node(self.self_node.clone())
             .await
         {
             tracing::error!("Failed to join cache ring: {}", e);

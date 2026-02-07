@@ -1,13 +1,16 @@
 use std::{net::SocketAddr, sync::Arc};
 
-use clap::{Parser, Subcommand };
-use tokio::sync::mpsc;
-use tonic::transport::Server;
 use arustio::{
     block::{
-        manager::BlockManager, node::{BlockNode, BlockNodeStatus}
+        manager::BlockManager,
+        node::{BlockNode, BlockNodeStatus},
     },
     cache::manager::CacheManager,
+    client::{
+        block::block_client::BlockNodeClient, metadata_client::MetadataClient,
+        virtual_file_system::VirtualFileSystem as ClientFileSystem,
+    },
+    cmd::{fs_command::FsCommands, handler::handle_fs_command},
     common::{Error, NodeConfig, Result, raft_client::RaftClient},
     metadata::{
         RocksMetadataStore,
@@ -16,23 +19,15 @@ use arustio::{
             linearizable_read::LinearizableReadHandle, raft_store::RaftMetadataStore,
             rocks_store::RocksStorage,
         },
-    }, server::{
+    },
+    server::{
+        block_node_service::BlockNodeServiceImpl, metadata_service::MetadataServiceImpl,
         raft_server::start_raft_server,
-        metadata_service::MetadataServiceImpl,
-        block_node_service::BlockNodeServiceImpl,
-    },
-    client::{
-        virtual_file_system::VirtualFileSystem as ClientFileSystem,
-        metadata_client::MetadataClient,
-        block::block_client::BlockNodeClient,
-    },
-    cmd::{
-        fs_command::FsCommands,
-        handler::{
-            handle_fs_command,
-        }
     },
 };
+use clap::{Parser, Subcommand};
+use tokio::sync::mpsc;
+use tonic::transport::Server;
 
 #[derive(Parser)]
 #[command(name = "arustio")]
@@ -136,7 +131,7 @@ async fn main() -> Result<()> {
                 raft_node_id,
             )
             .await
-        },
+        }
         Commands::Fs { fs_command, server } => {
             let metadata_client = MetadataClient::new(server.clone())
                 .await
@@ -154,13 +149,13 @@ async fn main() -> Result<()> {
 }
 
 async fn run_server(
-        data_dir: String,
-        config_path: String,
-        block_node_id: String,
-        block_node_url: String,
-        raft: bool,
-        raft_node_id: Option<u64>,
-    ) -> Result<()> {
+    data_dir: String,
+    config_path: String,
+    block_node_id: String,
+    block_node_url: String,
+    raft: bool,
+    raft_node_id: Option<u64>,
+) -> Result<()> {
     tracing::info!(
         "Starting Arustio node {} with data dir: {}",
         block_node_id,
@@ -169,10 +164,10 @@ async fn run_server(
     let node_cfg = NodeConfig::from_file(&config_path)
         .map_err(|e| Error::Internal(format!("NodeConfig::from_file: {e}")))?;
     tracing::debug!("Loaded config: {:?}", node_cfg);
-    let listen_addr = node_cfg.fs_listen.parse().map_err(|e| {
-        Error::Internal(format!("Invalid fs_listen address in config: {}", e))
-    })?;
-
+    let listen_addr = node_cfg
+        .fs_listen
+        .parse()
+        .map_err(|e| Error::Internal(format!("Invalid fs_listen address in config: {}", e)))?;
 
     let mut ring_nodes: Vec<String> = Vec::new();
     let block_node = BlockNode {
@@ -186,7 +181,7 @@ async fn run_server(
     };
     ring_nodes.push(block_node_id.clone());
 
-    let capacity_bytes= 0;
+    let capacity_bytes = 0;
     let cache_manager = Arc::new(CacheManager::new(capacity_bytes));
 
     tracing::info!(
@@ -203,7 +198,7 @@ async fn run_server(
             None => {
                 return Err(Error::Internal(
                     "Raft node ID must be specified when --raft is enabled".to_string(),
-                ))
+                ));
             }
         };
         let raft_bootstrap_addr = format!("http://{}", node_cfg.raft_listen);
@@ -250,9 +245,8 @@ async fn run_server(
             }
         });
 
-
         tracing::info!("Starting Raft server with node ID {}", raft_node_id);
-        
+
         start_raft_server(raft_node_id, node_cfg, storage, read_rx, linearizer).await?;
     } else {
         let metadata_store: Arc<dyn MetadataStore> = Arc::new(
@@ -276,12 +270,7 @@ async fn run_server(
             });
         }
 
-        run_file_server(
-            listen_addr,
-            metadata_store,
-            cache_manager.clone(),
-        )
-        .await?;
+        run_file_server(listen_addr, metadata_store, cache_manager.clone()).await?;
     }
 
     Ok(())

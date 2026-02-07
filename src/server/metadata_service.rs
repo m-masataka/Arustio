@@ -3,21 +3,14 @@ use std::sync::Arc;
 use crate::{
     core::file_metadata::MountInfo,
     meta::{
-        DeleteRequest, DeleteResponse,
-        GetByIdRequest, GetByIdResponse,
-        GetRequest, GetResponse,
-        PutRequest, PutResponse,
-        ListChildrenRequest, ListChildrenResponse,
-        GetMountRequest, GetMountResponse,
-        PutMountRequest, PutMountResponse,
-        DeleteMountRequest, DeleteMountResponse,
-        ListMountsRequest, ListMountsResponse,
-        ListBlockNodesRequest, ListBlockNodesResponse,
-        metadata_service_server::{
-            MetadataService, MetadataServiceServer
-        }
+        DeleteMountRequest, DeleteMountResponse, DeleteRequest, DeleteResponse, GetByIdRequest,
+        GetByIdResponse, GetMountRequest, GetMountResponse, GetRequest, GetResponse,
+        ListBlockNodesRequest, ListBlockNodesResponse, ListChildrenRequest, ListChildrenResponse,
+        ListMountsRequest, ListMountsResponse, PutMountRequest, PutMountResponse, PutRequest,
+        PutResponse,
+        metadata_service_server::{MetadataService, MetadataServiceServer},
     },
-    metadata::metadata::MetadataStore
+    metadata::metadata::MetadataStore,
 };
 
 use tonic::{Request, Response, Status};
@@ -38,13 +31,10 @@ impl MetadataServiceImpl {
 
 #[tonic::async_trait]
 impl MetadataService for MetadataServiceImpl {
-    async fn get(
-        &self,
-        request: Request<GetRequest>,
-    ) -> Result<Response<GetResponse>, Status> {
+    async fn get(&self, request: Request<GetRequest>) -> Result<Response<GetResponse>, Status> {
         let path = request.into_inner().path;
         // Placeholder logic for fetching metadata by path
-        let metadata_opt= self
+        let metadata_opt = self
             .metadata_store
             .get(&path)
             .await
@@ -71,7 +61,7 @@ impl MetadataService for MetadataServiceImpl {
         let uuid = uuid::Uuid::parse_str(&id)
             .map_err(|_| Status::invalid_argument("Invalid UUID format"))?;
         // Placeholder logic for fetching metadata by ID
-        let metadata_opt= self
+        let metadata_opt = self
             .metadata_store
             .get_by_id(&uuid)
             .await
@@ -90,10 +80,7 @@ impl MetadataService for MetadataServiceImpl {
         Ok(Response::new(response))
     }
 
-    async fn put(
-        &self,
-        request: Request<PutRequest>,
-    ) -> Result<Response<PutResponse>, Status> {
+    async fn put(&self, request: Request<PutRequest>) -> Result<Response<PutResponse>, Status> {
         let req = request.into_inner();
         let metadata = req
             .metadata
@@ -123,7 +110,7 @@ impl MetadataService for MetadataServiceImpl {
             .delete(&path)
             .await
             .map_err(|e| Status::internal(format!("Metadata store error: {}", e)))?;
-        let response = DeleteResponse { deleted: true, }; // Placeholder
+        let response = DeleteResponse { deleted: true }; // Placeholder
         Ok(Response::new(response))
     }
 
@@ -200,7 +187,7 @@ impl MetadataService for MetadataServiceImpl {
             .delete_mount(&path)
             .await
             .map_err(|e| Status::internal(format!("Metadata store error: {}", e)))?;
-        let response = DeleteMountResponse { deleted: true, }; // Placeholder
+        let response = DeleteMountResponse { deleted: true }; // Placeholder
         Ok(Response::new(response))
     }
 

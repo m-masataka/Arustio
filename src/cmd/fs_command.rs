@@ -1,6 +1,5 @@
 use clap::Subcommand;
 
-
 #[derive(Subcommand)]
 pub enum FsCommands {
     /// Mount an under file system to a path

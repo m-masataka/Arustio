@@ -1,7 +1,14 @@
 //! Simple in-memory metadata store for testing and development
 
 use crate::{
+    block::node::BlockNode,
+    common::{
+        raft_client::RaftClient,
+        {Error, Result},
+    },
+    core::file_metadata::FileMetadata,
     core::file_metadata::MountInfo,
+    meta::{FileMetadata as ProtoFileMetadata, MetaCmd, Mount, PutFileMeta, Unmount, meta_cmd},
     metadata::{
         metadata::MetadataStore,
         raft::linearizable_read::LinearizableReadHandle,
@@ -9,24 +16,10 @@ use crate::{
         utils::{MOUNT_PREFIX, PATH_PREFIX, kv_key_id, kv_key_mount_path, kv_key_path},
     },
     ufs::config::UfsConfig,
-    core::file_metadata::FileMetadata,
-    block::node::BlockNode,
-    common::{
-        raft_client::RaftClient,
-        {Error, Result},
-    },
-    meta::{
-        FileMetadata as ProtoFileMetadata,
-        PutFileMeta,
-        MetaCmd,
-        meta_cmd,
-        Mount,
-        Unmount,
-    },
 };
+use async_trait::async_trait;
 use prost::Message;
 use std::sync::Arc;
-use async_trait::async_trait;
 use uuid::Uuid;
 
 /// Raft-based metadata store implementation
@@ -92,12 +85,10 @@ impl MetadataStore for RaftMetadataStore {
         );
         self.raft_client
             .send_command(MetaCmd {
-                op: Some(meta_cmd::Op::PutFileMeta(
-                    PutFileMeta {
-                        full_path: metadata.path.clone(),
-                        file_metadata: Some(metadata.into()),
-                    },
-                )),
+                op: Some(meta_cmd::Op::PutFileMeta(PutFileMeta {
+                    full_path: metadata.path.clone(),
+                    file_metadata: Some(metadata.into()),
+                })),
             })
             .await
             .map_err(|e| Error::Internal(format!("Failed to send put command: {}", e)))?;
@@ -215,14 +206,14 @@ impl MetadataStore for RaftMetadataStore {
     async fn put_block_node(&self, block_node: BlockNode) -> Result<()> {
         self.raft_client
             .send_command(MetaCmd {
-                op: Some(meta_cmd::Op::AddBlockNode(
-                    crate::meta::AddBlockNode {
-                        node: Some(block_node.into()),
-                    },
-                )),
+                op: Some(meta_cmd::Op::AddBlockNode(crate::meta::AddBlockNode {
+                    node: Some(block_node.into()),
+                })),
             })
             .await
-            .map_err(|e| Error::Internal(format!("Failed to send put block node command: {}", e)))?;
+            .map_err(|e| {
+                Error::Internal(format!("Failed to send put block node command: {}", e))
+            })?;
         Ok(())
     }
 

@@ -1,20 +1,16 @@
+use crate::common::{Error, NodeConfig, Result};
 use crate::meta::MetaCmd;
 use crate::meta::meta_api_server;
-use crate::raftio;
-use crate::common::{Error, NodeConfig, Result};
+use crate::meta::{
+    GetBlockNodesRequest, GetBlockNodesResponse, GetFileMetaRequest, GetFileMetaResponse,
+    GetLeaderRequest, GetLeaderResponse,
+};
 use crate::metadata::raft::apply::apply_to_kv;
 use crate::metadata::raft::cluster::RaftClusterState;
 use crate::metadata::raft::linearizable_read::{LinearizableReadHandle, LinearizableReadRequest};
 use crate::metadata::raft::raft_transport::{GrpcTransport, PeerStore, Transport};
 use crate::metadata::raft::rocks_store::{KEY_CONF_STATE, RocksStorage};
-use crate::meta::{
-    GetBlockNodesRequest,
-    GetBlockNodesResponse,
-    GetFileMetaRequest,
-    GetFileMetaResponse,
-    GetLeaderRequest,
-    GetLeaderResponse,
-};
+use crate::raftio;
 use protobuf::CodedInputStream; // If using protobuf 2.x
 // If using protobuf 3.x or later, remove this line and use Message::merge_from_bytes directly in your code.
 use protobuf::Message;
@@ -83,7 +79,6 @@ pub async fn start_raft_server(
     tracing::info!("Start Raft Server");
     cfg.validate()
         .map_err(|e| Error::Internal(format!("Raft Config validate: {e}")))?;
-
 
     let st = storage.clone();
     let grpc_storage = st.clone();

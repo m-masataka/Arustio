@@ -1,8 +1,4 @@
-use crate::{
-    core::file_metadata::BlockDesc,
-    block::manager::CHUNK_SIZE,
-};
-
+use crate::{block::manager::CHUNK_SIZE, core::file_metadata::BlockDesc};
 
 pub async fn plan_chunk_layout(file_size: u64) -> Vec<BlockDesc> {
     let chunk_count = chunk_count(file_size);

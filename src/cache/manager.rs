@@ -1,8 +1,8 @@
+use crate::common::Result;
 use std::{
     hash::{Hash, Hasher},
     sync::Arc,
 };
-use crate::common::Result;
 
 use bytes::Bytes;
 use moka::future::Cache;
@@ -35,9 +35,7 @@ pub struct CacheManager {
 }
 
 impl CacheManager {
-    pub fn new(
-        capacity_bytes: u64,
-    ) -> Self {
+    pub fn new(capacity_bytes: u64) -> Self {
         let capacity = if capacity_bytes == 0 {
             DEFAULT_CAPACITY
         } else {
@@ -49,7 +47,12 @@ impl CacheManager {
     }
 
     pub async fn store_block(&self, file_id: Uuid, index: u64, data: Bytes) -> Result<()> {
-        tracing::debug!("Storing block: file_id={}, index={}, size={}", file_id, index, data.len());
+        tracing::debug!(
+            "Storing block: file_id={}, index={}, size={}",
+            file_id,
+            index,
+            data.len()
+        );
         self.cache
             .insert(ChunkKey { file_id, index }, Arc::new(data.to_vec()))
             .await;
