@@ -1,40 +1,56 @@
 # Architecture Overview
 
-This document outlines the major runtime subsystems that complement the high-level overview in the README. It focuses on two components that commonly raise questions for operators: metadata management and the distributed cache tier.
+This document describes the current runtime architecture.
 
-## Metadata Management (Raft + RocksDB)
+## Components
 
-Each Arustio server embeds a metadata store that is backed by RocksDB for persistence and coordinated through Raft for consistency.
+### Client FileSystem (VFS)
 
-### Write Path
+The client owns the FileSystem API and is the primary entry point. It performs:
 
-1. A gRPC handler or internal task creates a `MetaCmd` (e.g., `PutFileMeta`, `Mount`, `AddCacheNode`).
-2. The `RaftClient` resolves the current leader and submits the command via the metadata API.
-3. The leader appends the entry to its Raft log and replicates it to followers. Once a majority acknowledges the entry, it is committed.
-4. Every node applies the entry in order through `apply_to_kv`, writing the change into RocksDB. Because RocksDB is the authoritative store, nodes can restart and rebuild state from disk, while Raft guarantees the same order of updates everywhere.
+- Path operations (mkdir, ls, stat)
+- Reads and writes
+- Direct access to UFS for object data
+- Cache reads/writes via Block Nodes
+- Metadata lookups via Metadata Server
 
-### Read Path
+### Metadata Server (Raft + RocksDB)
 
-- **Linearizable Reads**: Operations that require strong consistency (e.g., CLI commands manipulating the namespace) go through the `LinearizableReadHandle`. The handle coordinates with Raft to ensure the local store has applied up-to-date entries before responding.
-- **Local Reads**: Non-critical lookups (listing cached entries, health probes) can read directly from RocksDB. Data is still fresh because Raft continually applies log entries, but full linearizability is optional.
+The metadata server is authoritative for namespace and file metadata. It uses:
 
-This split delivers strong consistency when needed while keeping read latency low in hot paths.
+- **RocksDB** for persistence
+- **Raft** for consistency and replication
 
-## Cache Layer
+Responsibilities:
 
-Fetching large objects from remote storage repeatedly is expensive, so Arustio provides an integrated cache tier.
+- Path to metadata mapping
+- File ID allocation and tracking
+- Mount table storage
+- Block node registry
 
-### Components
+### Block Nodes (Cache-Only)
 
-- **Cache Nodes**: Each node advertises itself (ID, URL, weight, zone) via the metadata Raft log. These nodes can be colocated with Arustio servers or run as dedicated cache daemons.
-- **Hash Ring**: A consistent hash ring (`HashRing`) maps `(file_id, block_index)` pairs to cache node IDs, providing even distribution and stable assignments when membership changes.
-- **CacheManager**: Maintains the latest node list, constructs the hash ring, and stores hot blocks in an in-process Moka cache for ultra-fast access.
-- **BlockAccessor**: Plans block boundaries and asks the cache manager which node owns each block. It is also responsible for writing freshly read UFS blocks back into the cache tier.
+Block nodes serve cached blocks and store them in a local cache. They are not authoritative for data and can be rebuilt from UFS and metadata as needed.
 
-### Data Flow
+### UFS (Unified Storage)
 
-1. A VFS read determines the needed blocks and asks `BlockAccessor` for node placements.
-2. For each block, the cache manager first checks the local Moka cache. If it misses, the system issues a network read to the owning cache node. If that miss occurs as well, the request falls back to the corresponding UFS backend.
-3. When data has to be fetched from UFS, the VFS streams it to the client while simultaneously chunking and writing blocks back through `CacheManager::store_block` so subsequent reads become cache hits.
+UFS abstracts backing stores (S3/MinIO, local, memory). The client FileSystem reads/writes UFS directly.
 
-By decoupling ownership (hash ring) from local caching (Moka), the system can scale horizontally and tolerate node churn without central coordination. Cache membership is simply another piece of metadata replicated through Raft, so all servers share a consistent view.
+## Read Path
+
+1. Client FileSystem resolves metadata via Metadata Server.
+2. Client attempts to read blocks from Block Nodes (cache).
+3. Cache miss falls back to UFS read.
+4. Read data is written back to Block Nodes for future hits.
+
+## Write Path
+
+1. Client FileSystem writes to UFS.
+2. Metadata is updated via Metadata Server.
+3. Written blocks are optionally cached on Block Nodes.
+
+## Notes
+
+- Block Nodes are cache-only and can be scaled independently.
+- Metadata server is the source of truth for namespace and file metadata.
+- UFS is the source of truth for object data.
