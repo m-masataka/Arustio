@@ -130,3 +130,61 @@ impl TryFrom<ProtoUfsConfig> for UfsConfig {
         Ok(res)
     }
 }
+
+pub fn parse_uri_to_config(
+    uri: &str,
+    options: std::collections::HashMap<String, String>,
+) -> Result<UfsConfig, String> {
+    if uri.starts_with("s3://") || uri.starts_with("s3a://") {
+        let without_prefix = uri
+            .strip_prefix("s3://")
+            .or_else(|| uri.strip_prefix("s3a://"))
+            .unwrap();
+
+        let parts: Vec<&str> = without_prefix.splitn(2, '/').collect();
+        let bucket = parts[0].to_string();
+
+        Ok(UfsConfig::S3 {
+            bucket,
+            region: options
+                .get("region")
+                .cloned()
+                .or_else(|| std::env::var("AWS_REGION").ok())
+                .unwrap_or_else(|| "us-east-1".to_string()),
+            access_key_id: options
+                .get("access_key_id")
+                .cloned()
+                .or_else(|| std::env::var("AWS_ACCESS_KEY_ID").ok()),
+            secret_access_key: options
+                .get("secret_access_key")
+                .cloned()
+                .or_else(|| std::env::var("AWS_SECRET_ACCESS_KEY").ok()),
+            endpoint: options
+                .get("endpoint")
+                .cloned()
+                .or_else(|| std::env::var("S3_ENDPOINT").ok()),
+        })
+    } else if uri.starts_with("gs://") || uri.starts_with("gcs://") {
+        let without_prefix = uri
+            .strip_prefix("gs://")
+            .or_else(|| uri.strip_prefix("gcs://"))
+            .unwrap();
+
+        let parts: Vec<&str> = without_prefix.splitn(2, '/').collect();
+        let bucket = parts[0].to_string();
+
+        Ok(UfsConfig::Gcs {
+            bucket,
+            service_account_path: options.get("service_account_path").cloned(),
+        })
+    } else if uri.starts_with("local://") {
+        let path = uri.strip_prefix("local://").unwrap();
+        Ok(UfsConfig::Local {
+            root_path: path.to_string(),
+        })
+    } else if uri.starts_with("mem://") || uri == "memory" {
+        Ok(UfsConfig::Memory)
+    } else {
+        Err(format!("Unsupported URI scheme: {}", uri))
+    }
+}

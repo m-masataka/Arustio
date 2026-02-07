@@ -50,6 +50,7 @@ impl CacheManager {
     }
 
     pub async fn store_block(&self, file_id: Uuid, index: u64, data: Bytes) -> Result<()> {
+        tracing::debug!("Storing block: file_id={}, index={}, size={}", file_id, index, data.len());
         self.cache
             .insert(ChunkKey { file_id, index }, Arc::new(data.to_vec()))
             .await;
@@ -57,6 +58,7 @@ impl CacheManager {
     }
 
     pub async fn read_block(&self, file_id: Uuid, index: u64) -> Result<Bytes> {
+        tracing::debug!("Reading block: file_id={}, index={}", file_id, index);
         match self.cache.get(&ChunkKey { file_id, index }).await {
             Some(chunk) => Ok(Bytes::from(chunk.as_ref().clone())),
             None => Err(io::Error::new(

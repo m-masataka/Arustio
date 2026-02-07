@@ -8,18 +8,12 @@ use async_trait::async_trait;
 use crate::{
     common::Result,
     core::file_metadata::FileMetadata,
+    core::file_metadata::MountInfo,
     ufs::config::UfsConfig,
     block::node::BlockNode,
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-
-/// Mount point configuration stored in metadata
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MountInfo {
-    pub path: String,
-    pub config: UfsConfig,
-}
 
 /// Trait for metadata storage operations
 #[async_trait]

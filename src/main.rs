@@ -1,12 +1,15 @@
 use std::{net::SocketAddr, sync::Arc};
 
 use clap::{Parser, Subcommand };
-use tokio::sync::{RwLock, mpsc};
+use tokio::sync::mpsc;
 use tonic::transport::Server;
 use arustio::{
     block::{
         manager::BlockManager, node::{BlockNode, BlockNodeStatus}
-    }, cache::manager::CacheManager, common::{Error, NodeConfig, Result, raft_client::RaftClient}, metadata::{
+    },
+    cache::manager::CacheManager,
+    common::{Error, NodeConfig, Result, raft_client::RaftClient},
+    metadata::{
         RocksMetadataStore,
         metadata::MetadataStore,
         raft::{
@@ -14,10 +17,15 @@ use arustio::{
             rocks_store::RocksStorage,
         },
     }, server::{
-        file_server::{ArustioFileService, ArustioMountService},
         raft_server::start_raft_server,
+        metadata_service::MetadataServiceImpl,
+        block_node_service::BlockNodeServiceImpl,
     },
-    vfs::virtual_file_system::VirtualFileSystem,
+    client::{
+        virtual_file_system::VirtualFileSystem as ClientFileSystem,
+        metadata_client::MetadataClient,
+        block::block_client::BlockNodeClient,
+    },
     cmd::{
         fs_command::FsCommands,
         handler::{
@@ -130,7 +138,16 @@ async fn main() -> Result<()> {
             .await
         },
         Commands::Fs { fs_command, server } => {
-            let _ = handle_fs_command(fs_command, &server).await;
+            let metadata_client = MetadataClient::new(server.clone())
+                .await
+                .map_err(|e| Error::Internal(format!("Failed to create MetadataClient: {}", e)))?;
+
+            let cache_client = BlockNodeClient::new(metadata_client.clone());
+
+            let vfs = ClientFileSystem::new(metadata_client, Arc::new(cache_client));
+
+            let res = handle_fs_command(fs_command, vfs).await;
+            tracing::info!("FS command completed with result: {:?}", res);
             Ok(())
         }
     }
@@ -277,20 +294,14 @@ async fn run_file_server(
     cache: Arc<CacheManager>,
 ) -> Result<()> {
     tracing::info!("Starting gRPC file server on {}", addr);
-    // Create Virtual FS with mount support
-    let vfs = Arc::new(RwLock::new(VirtualFileSystem::new(metadata_store, cache)));
-    tracing::debug!("VirtualFileSystem initialized");
-
-    // Create gRPC services
-    let mount_service = ArustioMountService::new(vfs.clone()).into_server();
-    tracing::debug!("Mount service initialized");
-    let file_service = ArustioFileService::new(vfs.clone()).into_server();
+    let metadata_service = MetadataServiceImpl::new(metadata_store.clone()).into_server();
+    let block_node_service = BlockNodeServiceImpl::new(cache).into_server();
 
     tracing::info!("Ready to accept mount and file operations");
 
     Server::builder()
-        .add_service(mount_service)
-        .add_service(file_service)
+        .add_service(metadata_service)
+        .add_service(block_node_service)
         .serve(addr)
         .await
         .map_err(|e| Error::Internal(format!("Server error: {}", e)))?;

@@ -1,5 +1,4 @@
-version: '3.8'
-
+version: '3'
 services:
   # MinIO - S3-compatible object storage
   minio:
@@ -36,6 +35,13 @@ services:
       /usr/bin/mc mb myminio/data-bucket --ignore-existing;
       /usr/bin/mc mb myminio/temp-bucket --ignore-existing;
       echo 'MinIO buckets created successfully';
+      echo 'dummy content 1' > /tmp/dummy1.txt;
+      echo 'dummy content 2' > /tmp/dummy2.txt;
+      echo 'Dummy files...';
+      dd if=/dev/urandom of=/tmp/bigfile.bin bs=1M count=100;
+      /usr/bin/mc cp /tmp/dummy*.txt myminio/test-bucket/;
+      /usr/bin/mc cp /tmp/bigfile.bin myminio/test-bucket/;
+      echo 'MinIO buckets and dummy files initialized';
       "
     networks:
       - arustio-network
@@ -52,26 +58,19 @@ services:
       - minio
       - minio-init
     environment:
-      # S3/MinIO Configuration
-      S3_BUCKET: test-bucket
-      S3_REGION: us-east-1
-      S3_ENDPOINT: http://minio:9000
-      AWS_ACCESS_KEY_ID: minioadmin
-      AWS_SECRET_ACCESS_KEY: minioadmin
-
-      # Enable path-style access for MinIO
-      AWS_EC2_METADATA_DISABLED: "true"
-
       # Rust logging
       RUST_LOG: info
+    command: ["/bin/sh", "-lc", "arustio server --block-node-id 1 --config-path /app/config.toml --data-dir /tmp/node-1 --block-node-url http://arustio:50052"]
     volumes:
-      # Mount local directory for development
-      - ./data:/data
+      - arustio-data:/data
+      - ./config.toml:/app/config.toml:ro
     networks:
       - arustio-network
       
 volumes:
   minio-data:
+    driver: local
+  arustio-data:
     driver: local
 
 networks:

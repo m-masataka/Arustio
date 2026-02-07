@@ -1,60 +1,51 @@
 use crate::{
-    cmd::fs_command::FsCommands,
-    common::{
-        utils::timestamp_to_system_time,
-        error::Error,
+    client::virtual_file_system::VirtualFileSystem, cmd::fs_command::FsCommands, common::{
+        error::Error
     },
-    mount::{
-        ListRequest,
-        MountRequest,
-        UnmountRequest,
-        mount_service_client::MountServiceClient,
-
+    ufs::config::{UfsConfig, parse_uri_to_config},
+    core::{
+        file_system::FileSystem,
+        file_metadata::FileType,
     },
-    ufs::config::UfsConfig,
-    meta::FileType,
-    file::{
-        read_response,
-        ListFilesRequest, MkdirRequest, ReadRequest, StatRequest,
-        file_service_client::FileServiceClient,
-    }
 };
 
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
 use tokio_stream::StreamExt;
+use tokio_util::io::ReaderStream;
+use bytes::Bytes;
 
-pub async fn handle_fs_command(command: FsCommands, server: &str) -> anyhow::Result<()> {
+pub async fn handle_fs_command(command: FsCommands, vfs: VirtualFileSystem) -> anyhow::Result<()> {
     match command {
         FsCommands::Mount { path, uri, option } => {
-            handle_mount(path, uri, option, server).await?;
+            handle_mount(path, uri, option, &vfs).await?;
         }
         FsCommands::Unmount { path } => {
-            handle_unmount(path, server).await?;
+            handle_unmount(path, &vfs).await?;
         }
         FsCommands::List => {
-            handle_list_mounts(server).await?;
+            handle_list_mounts(&vfs).await?;
         }
         FsCommands::Ls { path, long } => {
-            handle_ls(path, long, server).await?;
+            handle_ls(path, long, &vfs).await?;
         }
         FsCommands::Stat { path } => {
-            handle_stat(path, server).await?;
+            handle_stat(path, &vfs).await?;
         }
         FsCommands::Mkdir { path } => {
-            handle_mkdir(path, server).await?;
+            handle_mkdir(path, &vfs).await?;
         }
         FsCommands::CopyFromLocal {
             local_path,
             remote_path,
         } => {
-            handle_copy_from_local(local_path, remote_path, server).await?;
+            handle_copy_from_local(local_path, remote_path, &vfs).await?;
         }
         FsCommands::CopyToLocal {
             remote_path,
             local_path,
         } => {
-            handle_copy_to_local(remote_path, local_path, server).await?;
+            handle_copy_to_local(remote_path, local_path, &vfs).await?;
         }
     }
     Ok(())
@@ -64,10 +55,9 @@ async fn handle_mount(
     path: String,
     uri: String,
     options: Vec<String>,
-    server: &str,
+    vfs: &VirtualFileSystem,
 ) -> anyhow::Result<()> {
     println!("Mounting {} to {}", uri, path);
-
     // Parse options
     let mut mount_options = std::collections::HashMap::new();
     for opt in options {
@@ -77,58 +67,24 @@ async fn handle_mount(
             anyhow::bail!("Invalid option format: {}. Expected KEY=VALUE", opt);
         }
     }
-
-    // Connect to server and send mount request
-    let mut client = MountServiceClient::connect(normalize_server_url(server)).await?;
-
-    let request = tonic::Request::new(MountRequest {
-        path: path.clone(),
-        uri: uri.clone(),
-        options: mount_options,
-    });
-
-    let response = client.mount(request).await?;
-    let response = response.into_inner();
-
-    if response.success {
-        println!("Successfully mounted {} to {}", uri, path);
-    } else {
-        anyhow::bail!("Failed to mount: {}", response.message);
-    }
-
+    let ufs_config = parse_uri_to_config(&uri, mount_options)
+        .map_err(|e| anyhow::anyhow!("Failed to parse URI to UfsConfig: {}", e))?;
+    vfs.mount(&path, ufs_config).await?;
+    println!("Successfully mounted {} to {}", uri, path);
     Ok(())
 }
 
-async fn handle_unmount(path: String, server: &str) -> anyhow::Result<()> {
+async fn handle_unmount(path: String, vfs: &VirtualFileSystem) -> anyhow::Result<()> {
     println!("Unmounting {}", path);
-
-    // Connect to server and send unmount request
-    let mut client = MountServiceClient::connect(normalize_server_url(server)).await?;
-
-    let request = tonic::Request::new(UnmountRequest { path: path.clone() });
-
-    let response = client.unmount(request).await?;
-    let response = response.into_inner();
-
-    if response.success {
-        println!("Successfully unmounted {}", path);
-    } else {
-        anyhow::bail!("Failed to unmount: {}", response.message);
-    }
-
+    vfs.unmount(&path).await?;
+    println!("Successfully unmounted {}", path);
     Ok(())
 }
 
-async fn handle_list_mounts(server: &str) -> anyhow::Result<()> {
-    // Connect to server and get list of mount points
-    let mut client = MountServiceClient::connect(normalize_server_url(server)).await?;
+async fn handle_list_mounts(vfs: &VirtualFileSystem) -> anyhow::Result<()> {
+    let mounts = vfs.list_mounts().await;
 
-    let request = tonic::Request::new(ListRequest {});
-
-    let response = client.list(request).await?;
-    let response = response.into_inner();
-
-    if response.mounts.is_empty() {
+    if mounts.is_empty() {
         println!("No mount points found.");
         return Ok(());
     }
@@ -140,13 +96,14 @@ async fn handle_list_mounts(server: &str) -> anyhow::Result<()> {
     );
     println!("{}", "-".repeat(110));
 
-    for mount in response.mounts {
-        let path = mount.full_path;
-        let ufs_config: UfsConfig = UfsConfig::try_from(mount.ufs_config.ok_or_else(|| {
-            Error::Internal("Missing ufs_config in mount entry".to_string())
-        })?)
-        .map_err(|e| Error::Internal(format!("Failed to convert UfsConfig: {}", e)))?;
-        let description = mount.description;
+    for mount in mounts {
+        let path = mount.path;
+        let ufs_config: UfsConfig = UfsConfig::try_from(mount.ufs_config.clone())
+            .map_err(|e| Error::Internal(format!("Failed to convert UfsConfig: {}", e)))?;
+        let description = match mount.description {
+            Some(desc) => desc,
+            None => "".to_string(),
+        };
         let (ufs_type, ufs_uri) = match ufs_config {
             UfsConfig::S3 { bucket, .. } => (
                 "S3".to_string(),
@@ -170,13 +127,9 @@ async fn handle_list_mounts(server: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn handle_ls(path: String, long_format: bool, server: &str) -> anyhow::Result<()> {
-    let mut client = FileServiceClient::connect(normalize_server_url(server)).await?;
-
-    let request = tonic::Request::new(ListFilesRequest { path: path.clone() });
-
-    let response = client.list_files(request).await?;
-    let entries = response.into_inner().entries;
+async fn handle_ls(path: String, long_format: bool, vfs: &VirtualFileSystem) -> anyhow::Result<()> {
+    
+    let entries = vfs.list(&path).await?;
 
     if entries.is_empty() {
         println!("No files found in {}", path);
@@ -185,15 +138,12 @@ async fn handle_ls(path: String, long_format: bool, server: &str) -> anyhow::Res
 
     for entry in entries {
         if long_format {
-            let file_type = if entry.file_type == FileType::Directory as i32 {
+            let file_type = if entry.file_type == FileType::Directory {
                 "d"
             } else {
                 "-"
             };
-            let timestamp = match entry.modified_at {
-                None => std::time::SystemTime::UNIX_EPOCH,
-                Some(ts) => timestamp_to_system_time(&ts),
-            };
+            let timestamp = entry.modified_at;
             let modified_at = chrono::DateTime::<chrono::Local>::from(timestamp);
             println!(
                 "{} {:>10} {} {}",
@@ -207,30 +157,17 @@ async fn handle_ls(path: String, long_format: bool, server: &str) -> anyhow::Res
     Ok(())
 }
 
-async fn handle_stat(path: String, server: &str) -> anyhow::Result<()> {
-    let mut client = FileServiceClient::connect(normalize_server_url(server)).await?;
-
-    let request = tonic::Request::new(StatRequest { path: path.clone() });
-
-    let response = client.stat(request).await?;
-    let entry_opt = response.into_inner().entry;
-
-    let entry = match entry_opt {
-        None => anyhow::bail!("Path not found: {}", path),
-        Some(e) => e,
-    };
+async fn handle_stat(path: String, vfs: &VirtualFileSystem) -> anyhow::Result<()> {
+    let entry = vfs.stat(&path).await?;
 
     // Assuming path is unique, take the first entry
-    let file_type = if entry.file_type == FileType::Directory as i32 {
+    let file_type = if entry.file_type == FileType::Directory {
         "Directory"
     } else {
         "File"
     };
 
-    let timestamp = match entry.modified_at {
-        None => std::time::SystemTime::UNIX_EPOCH,
-        Some(ts) => timestamp_to_system_time(&ts),
-    };
+    let timestamp = entry.modified_at;
     let modified_at = chrono::DateTime::<chrono::Local>::from(timestamp);
     let blocks = entry
         .blocks
@@ -246,77 +183,60 @@ async fn handle_stat(path: String, server: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn handle_mkdir(path: String, server: &str) -> anyhow::Result<()> {
+async fn handle_mkdir(path: String, vfs: &VirtualFileSystem) -> anyhow::Result<()> {
     println!("Creating directory {}", path);
-
-    let mut client = FileServiceClient::connect(normalize_server_url(server)).await?;
-
-    let request = tonic::Request::new(MkdirRequest { path: path.clone() });
-
-    let response = client.mkdir(request).await?;
-    let response = response.into_inner();
-
-    if response.success {
-        println!("Successfully created directory {}", path);
-    } else {
-        anyhow::bail!("Failed to create directory: {}", response.message);
+    match vfs.mkdir(&path).await {
+        Err(e) => {
+            anyhow::bail!("Failed to create directory {}: {}", path, e);
+        }
+        Ok(_) => {}
     }
 
+    println!("Successfully created directory {}", path);
     Ok(())
 }
 
 async fn handle_copy_from_local(
-    _local_path: String,
-    _remote_path: String,
-    _server: &str,
+    local_path: String,
+    remote_path: String,
+    vfs: &VirtualFileSystem,
 ) -> anyhow::Result<()> {
+    println!("Copying {} to {}", local_path, remote_path);
+    let file = File::open(&local_path).await?;
+    const CHUNK: usize = 1024 * 1024;
+    let stream = ReaderStream::new(file)
+        .map(|r| r.map_err(|e| crate::common::error::Error::Io(e)));
+    vfs.write(&remote_path, Box::pin(stream)).await?;
+    println!(
+        "Successfully uploaded {} to {}",
+        local_path, remote_path
+    );
     Ok(())
 }
 
 async fn handle_copy_to_local(
     remote_path: String,
     local_path: String,
-    server: &str,
+    vfs: &VirtualFileSystem,
 ) -> anyhow::Result<()> {
     println!("Copying {} to {}", remote_path, local_path);
-
-    let mut client = FileServiceClient::connect(normalize_server_url(server)).await?;
-
-    let request = tonic::Request::new(ReadRequest {
-        path: remote_path.clone(),
-    });
-
-    let mut stream = client.read(request).await?.into_inner();
-
+    let (m, mut stream) = vfs.read(&remote_path).await?;
     // Read metadata first
-    let first_msg = stream
-        .next()
-        .await
-        .ok_or_else(|| anyhow::anyhow!("Empty response from server"))??;
+    let size = m.size;
 
-    let file_size = match first_msg.data {
-        Some(read_response::Data::Metadata(m)) => m.size,
-        _ => anyhow::bail!("Expected metadata as first message"),
-    };
-
-    println!("File size: {} bytes", file_size);
+    println!("File size: {} bytes", size);
 
     // Create local file
     let mut file = File::create(&local_path).await?;
-    let mut total_bytes = 0u64;
+    let total_bytes = 0u64;
 
     println!("Downloading...");
     // Read chunks
-    while let Some(msg) = stream.next().await {
-        let msg = msg?;
-        match msg.data {
-            Some(read_response::Data::Chunk(chunk)) => {
-                file.write_all(&chunk).await?;
-                total_bytes += chunk.len() as u64;
-            }
-            _ => {}
-        }
+    while let Some(chunk_res) = stream.next().await {
+        let chunk: Bytes = chunk_res?;     // stream の Err をここで返す
+        file.write_all(&chunk).await?;
     }
+    file.flush().await?;
 
     println!(
         "Successfully downloaded {} bytes to {}",
@@ -324,13 +244,4 @@ async fn handle_copy_to_local(
     );
 
     Ok(())
-}
-
-/// Add http:// prefix to server address if not present
-fn normalize_server_url(server: &str) -> String {
-    if server.starts_with("http://") || server.starts_with("https://") {
-        server.to_string()
-    } else {
-        format!("http://{}", server)
-    }
 }

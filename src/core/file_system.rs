@@ -17,7 +17,6 @@ use crate::common::{
 use crate::core::file_metadata::{BlockDesc, FileMetadata};
 use crate::ufs::config::UfsConfig;
 use futures::stream::BoxStream;
-pub use crate::vfs::virtual_file_system::VirtualFileSystem;
 
 /// Trait for filesystem operations
 #[async_trait]
@@ -37,7 +36,11 @@ pub trait FileSystem: Send + Sync {
     ) -> Result<BoxStream<'static, Result<Bytes>>>;
 
     /// Write to a file (overwrites existing content)
-    async fn write(&self, path: &str, data: Bytes) -> Result<()>;
+    async fn write(
+        &self,
+        path: &str,
+        data: BoxStream<'static, Result<Bytes>>,
+    ) -> Result<()>;
 
     /// Write blocks to a file
     async fn write_block(

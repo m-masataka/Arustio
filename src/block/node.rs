@@ -1,4 +1,5 @@
 use chrono::{DateTime, NaiveDateTime, Utc};
+use serde::{Serialize, Deserialize};
 use crate::common::Error;
 use crate::meta::BlockNodeInfo as ProtoBlockNodeInfo;
 use prost_types::Timestamp;
@@ -17,7 +18,7 @@ fn chrono_to_prost(dt: DateTime<Utc>) -> Timestamp {
 }
 
 /// UFS backend type
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BlockNode {
     pub node_id: String,
     pub url: String,
@@ -29,7 +30,7 @@ pub struct BlockNode {
 }
 
 /// UFS backend type
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum BlockNodeStatus {
     Unspecified = 0,
     Up = 1,

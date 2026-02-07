@@ -164,12 +164,7 @@ message GetFileMetaResponse {
 
 // Get list of metadata under a directory
 message ListChildrenRequest {
-  // Full path of the directory
-  string dir_path = 1;
-
-  // Paging parameters can be added if needed:
-  // uint32 limit = 2;
-  // string start_after = 3;
+  string parent_id = 1;
 }
 
 message ListChildrenResponse {
@@ -232,4 +227,67 @@ message PutBlockMeta {
   string file_id = 1;
   uint64 index = 2;
   string node_id = 3;
+}
+
+
+
+// -----------------------------
+// MetadataService for Client
+// -----------------------------
+service MetadataService {
+  /// Retrieves file metadata by its path.
+  rpc Get(GetRequest) returns (GetResponse);
+  /// Retrieves file metadata by its unique identifier.
+  rpc GetById(GetByIdRequest) returns (GetByIdResponse);
+  /// Stores or updates file metadata.
+  rpc Put(PutRequest) returns (PutResponse);
+  /// Deletes file metadata by its path.
+  rpc Delete(DeleteRequest) returns (DeleteResponse);
+  /// List Children metadata under a directory
+  rpc ListChildren(ListChildrenRequest) returns (ListChildrenResponse);
+
+  /// Mount management
+  rpc PutMount(PutMountRequest) returns (PutMountResponse);
+  /// Get mount info by path
+  rpc GetMount(GetMountRequest) returns (GetMountResponse);
+  /// Delete mount by path
+  rpc DeleteMount(DeleteMountRequest) returns (DeleteMountResponse);
+  /// List all mounts
+  rpc ListMounts(ListMountsRequest) returns (ListMountsResponse);
+
+  /// Block node management
+  rpc ListBlockNodes(ListBlockNodesRequest) returns (ListBlockNodesResponse);
+}
+
+message GetRequest { string path = 1; }
+message GetResponse { FileMetadata metadata = 1; bool found = 2; }
+
+message GetByIdRequest { string id = 1; }
+message GetByIdResponse { FileMetadata metadata = 1; bool found = 2; }
+
+message PutRequest { FileMetadata metadata = 1; }
+message PutResponse {
+  bool created = 1; // create or update
+}
+message DeleteRequest { string path = 1; }
+message DeleteResponse {
+  bool deleted = 1;
+}
+message PutMountRequest { Mount mount = 1; }
+message PutMountResponse {
+  bool created = 1; // create or update
+}
+message GetMountRequest { string path = 1; }
+message GetMountResponse { Mount mount = 1; bool found = 2; }
+message DeleteMountRequest { string path = 1; }
+message DeleteMountResponse {
+  bool deleted = 1;
+}
+message ListMountsRequest {}
+message ListMountsResponse { repeated Mount mounts = 1; }
+
+// ---- BlockPlacementService ----
+message ListBlockNodesRequest {}
+message ListBlockNodesResponse {
+  repeated BlockNodeInfo nodes = 1;
 }

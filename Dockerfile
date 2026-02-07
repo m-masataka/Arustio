@@ -6,34 +6,37 @@ RUN apt update && apt install -y clang llvm-dev libclang-dev protobuf-compiler \
 
 # Copy manifests
 COPY Cargo.toml Cargo.lock ./
-COPY common/Cargo.toml common/Cargo.toml
-COPY ufs/Cargo.toml ufs/Cargo.toml
-COPY vfs/Cargo.toml vfs/Cargo.toml
-COPY metadata/Cargo.toml metadata/Cargo.toml
-COPY server/Cargo.toml server/Cargo.toml
-COPY command/Cargo.toml command/Cargo.toml
 
-# Copy build scripts and proto files
-COPY common/build.rs common/build.rs
-COPY common/proto common/proto
+# Create dummy src to build dependencies
+RUN mkdir -p src && echo "fn main(){}" > src/main.rs
 
-# Copy source code
-COPY common/src common/src
-COPY ufs/src ufs/src
-COPY vfs/src vfs/src
-COPY metadata/src metadata/src
-COPY server/src server/src
-COPY command/src command/src
+# BuildKit cache mounts for dependencies
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/app/target \
+    cargo build --release
 
-RUN cargo build --release --bin server
-RUN cargo build --release -p command
+# Copy actual source code
+COPY build.rs ./
+COPY src ./src
+COPY proto ./proto
 
-# Create data directory
-RUN mkdir -p /data
-RUN cp -r /app/target/release/server /usr/local/bin/arustio-server
-RUN cp -r /app/target/release/arustio /usr/local/bin/arustio
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/app/target \
+    cargo build --release --bin arustio \
+    && cp /app/target/release/arustio /tmp/arustio
 
+############################
+# Runtime
+############################
+# FROM debian:bookworm-slim AS runtime
+FROM debian:trixie-slim AS runtime
 WORKDIR /app
+RUN apt-get update && apt-get install -y --no-install-recommends libstdc++6 ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /tmp/arustio /usr/local/bin/arustio
 
 # Default command (start gRPC server)
 CMD ["arustio-server", "--mode", "server", "--addr", "0.0.0.0:50051"]

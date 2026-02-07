@@ -6,6 +6,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             &[
                 "proto/mount.proto",
                 "proto/file.proto",
+                "proto/blockio.proto",
                 "proto/meta.proto",
                 "proto/snapshot.proto",
                 "proto/raftio.proto",

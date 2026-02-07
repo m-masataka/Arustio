@@ -1,9 +1,9 @@
 pub mod common;
+pub mod client;
 pub mod core;
 pub mod metadata;
 pub mod server;
 pub mod ufs;
-pub mod vfs;
 pub mod cache;
 pub mod block;
 pub mod cmd;
@@ -15,6 +15,10 @@ pub mod mount {
 
 pub mod file {
     tonic::include_proto!("arustio.file");
+}
+
+pub mod blockio {
+    tonic::include_proto!("arustio.blockio");
 }
 
 pub mod meta {

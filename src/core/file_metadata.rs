@@ -2,7 +2,14 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::meta::{BlockDesc as ProtoBlockDesc, FileMetadata as ProtoFileMetadata};
+use crate::{
+    meta::{
+        BlockDesc as ProtoBlockDesc,
+        FileMetadata as ProtoFileMetadata,
+        Mount as ProtoMount,
+    }
+};
+use crate::ufs::config::UfsConfig;
 use prost_types::Timestamp;
 use std::convert::TryFrom;
 
@@ -214,5 +221,38 @@ impl TryFrom<ProtoBlockDesc> for BlockDesc {
             range_start: proto.range_start,
             range_end: proto.range_end,
         })
+    }
+}
+
+
+// Mount metadata
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MountInfo {
+    pub path: String,
+    pub ufs_config: UfsConfig,
+    pub description: Option<String>,
+}
+
+impl TryFrom<ProtoMount> for MountInfo {
+    type Error = String;
+
+    fn try_from(proto: ProtoMount) -> Result<Self, Self::Error> {
+        Ok(Self {
+            path: proto.full_path,
+            ufs_config: proto.ufs_config
+                .ok_or_else(|| "Missing ufs_config in Mount".to_string())?
+                .try_into()?,
+            description: string_to_opt(proto.description),
+        })
+    }
+}
+
+impl From<MountInfo> for ProtoMount {
+    fn from(mount: MountInfo) -> Self {
+        ProtoMount {
+            full_path: mount.path,
+            ufs_config: Some(mount.ufs_config.into()),
+            description: opt_to_string(mount.description),
+        }
     }
 }

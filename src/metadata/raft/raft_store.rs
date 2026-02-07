@@ -1,8 +1,9 @@
 //! Simple in-memory metadata store for testing and development
 
 use crate::{
+    core::file_metadata::MountInfo,
     metadata::{
-        metadata::{MetadataStore, MountInfo},
+        metadata::MetadataStore,
         raft::linearizable_read::LinearizableReadHandle,
         raft::rocks_store::RocksStorage,
         utils::{MOUNT_PREFIX, PATH_PREFIX, kv_key_id, kv_key_mount_path, kv_key_path},
@@ -137,7 +138,7 @@ impl MetadataStore for RaftMetadataStore {
             .send_command(MetaCmd {
                 op: Some(meta_cmd::Op::Mount(Mount {
                     full_path: mount_info.path.clone(),
-                    ufs_config: Some(mount_info.config.clone().into()),
+                    ufs_config: Some(mount_info.ufs_config.clone().into()),
                     description: "Dummy Description".to_string(),
                 })),
             })
@@ -162,8 +163,9 @@ impl MetadataStore for RaftMetadataStore {
                 .ok_or_else(|| Error::Internal("Missing ufs_config in mount entry".into()))?;
             Ok(Some(MountInfo {
                 path: mount.full_path,
-                config: UfsConfig::try_from(config)
+                ufs_config: UfsConfig::try_from(config)
                     .map_err(|e| Error::Internal(format!("Failed to convert UfsConfig: {}", e)))?,
+                description: None,
             }))
         } else {
             Ok(None)
@@ -198,10 +200,11 @@ impl MetadataStore for RaftMetadataStore {
                     .map_err(|e| Error::Internal(format!("Failed to decode mount entry: {}", e)))?;
                 mounts.push(MountInfo {
                     path: mount.full_path,
-                    config: UfsConfig::try_from(mount.ufs_config.ok_or_else(|| {
+                    ufs_config: UfsConfig::try_from(mount.ufs_config.ok_or_else(|| {
                         Error::Internal("Missing ufs_config in mount entry".to_string())
                     })?)
                     .map_err(|e| Error::Internal(format!("Failed to convert UfsConfig: {}", e)))?,
+                    description: None,
                 });
             }
         }

@@ -10,7 +10,7 @@
 use async_trait::async_trait;
 use bytes::Bytes;
 use crate::common::{Error, Result};
-use object_store::{ObjectMeta, ObjectStore, path::Path as ObjectPath};
+use object_store::{WriteMultipart, ObjectMeta, ObjectStore, path::Path as ObjectPath};
 use std::sync::Arc;
 
 use crate::ufs::config::UfsConfig;
@@ -29,6 +29,9 @@ pub trait UfsOperations: Send + Sync {
 
     /// Write an object to UFS
     async fn write(&self, path: &str, data: Bytes) -> Result<()>;
+
+    /// Open a multipart write stream to UFS
+    async fn open_multipart_write(&self, path: &str) -> Result<WriteMultipart>;
 
     /// Delete an object from UFS
     async fn delete(&self, path: &str) -> Result<()>;
@@ -62,6 +65,11 @@ impl Ufs {
     /// Create a new UFS instance with a custom object store
     pub fn with_store(store: Arc<dyn ObjectStore>) -> Self {
         Self { store }
+    }
+    
+    /// Get Config of UFS
+    pub fn get_config(&self) -> String {
+        return format!("{:?}", self.store);
     }
 
     /// Convert a string path to ObjectPath
@@ -116,6 +124,13 @@ impl UfsOperations for Ufs {
             .await
             .map_err(|e| Error::Storage(format!("Failed to write {}: {}", path, e)))?;
         Ok(())
+    }
+
+    async fn open_multipart_write(&self, path: &str) -> Result<WriteMultipart> {
+        // Convert Steram to multipart upload
+        let object_path = Self::to_object_path(path);
+        let upload =  self.store.put_multipart(&object_path).await.unwrap();
+        Ok(WriteMultipart::new(upload))
     }
 
     async fn delete(&self, path: &str) -> Result<()> {

@@ -2,15 +2,24 @@ use std::path::Path;
 use std::sync::Arc;
 use async_trait::async_trait;
 use bincode;
+use prost::Message;
 use rocksdb::{DBWithThreadMode, Direction, IteratorMode, MultiThreaded, Options, WriteBatch};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use uuid::Uuid;
 
 use crate::{
-    metadata::metadata::{MetadataStore, MountInfo},
+    metadata::metadata::MetadataStore,
     metadata::utils::{MOUNT_PREFIX, PATH_PREFIX, kv_key_id, kv_key_mount_path, kv_key_path},
-    core::file_metadata::FileMetadata,
+    meta::{
+        Mount as MountInfoProto,
+        FileMetadata as FileMetadataProto,
+        BlockNodeInfo as BlockNodeProto,
+    },
+    core::file_metadata::{
+        FileMetadata,
+        MountInfo,
+    },
     common::{Error, Result},
     block::node::BlockNode,
 };
@@ -41,7 +50,11 @@ impl RocksMetadataStore {
     }
 
     fn store_metadata(&self, metadata: FileMetadata) -> Result<()> {
-        let encoded = encode_value(&metadata)?;
+        let filemeta_proto: FileMetadataProto = metadata.clone().into();
+        let mut encoded = Vec::new();
+        filemeta_proto.encode(&mut encoded).map_err(|e| {
+            Error::Internal(format!("Failed to encode FileMetadata: {}", e))
+        })?;
         let mut wb = WriteBatch::default();
         wb.put(kv_key_path(&metadata.path), encoded.clone());
         wb.put(kv_key_id(&metadata.id.to_string()), encoded);
@@ -51,17 +64,37 @@ impl RocksMetadataStore {
     fn get_file_by_path(&self, path: &str) -> Result<Option<FileMetadata>> {
         let key = kv_key_path(path);
         let value = self.db.get(key).map_err(map_rocks_err)?;
-        value
-            .map(|bytes| decode_value::<FileMetadata>(&bytes))
-            .transpose()
+        match value {
+            Some(bytes) => {
+                let filemeta_proto = FileMetadataProto::decode(&bytes[..])
+                    .map_err(|e| {
+                        Error::Internal(format!("Failed to decode FileMetadata: {}", e))
+                    })?;
+                let file_metadata: FileMetadata = filemeta_proto.try_into().map_err(|e| {
+                    Error::Internal(format!("Failed to convert FileMetadataProto to FileMetadata: {}", e))
+                })?;
+                Ok(Some(file_metadata))
+            }
+            None => Ok(None),
+        }
     }
 
     fn get_file_by_id(&self, id: &Uuid) -> Result<Option<FileMetadata>> {
         let key = kv_key_id(&id.to_string());
         let value = self.db.get(key).map_err(map_rocks_err)?;
-        value
-            .map(|bytes| decode_value::<FileMetadata>(&bytes))
-            .transpose()
+        match value {
+            Some(bytes) => {
+                let filemeta_proto = FileMetadataProto::decode(&bytes[..])
+                    .map_err(|e| {
+                        Error::Internal(format!("Failed to decode FileMetadata: {}", e))
+                    })?;
+                let file_metadata: FileMetadata = filemeta_proto.try_into().map_err(|e| {
+                    Error::Internal(format!("Failed to convert FileMetadataProto to FileMetadata: {}", e))
+                })?;
+                Ok(Some(file_metadata))
+            }
+            None => Ok(None),
+        }
     }
 
     fn delete_metadata(&self, path: &str) -> Result<()> {
@@ -84,7 +117,13 @@ impl RocksMetadataStore {
             if !raw_key.starts_with(PATH_PREFIX) {
                 break;
             }
-            let meta: FileMetadata = decode_value(&raw_val)?;
+            let filemeta_proto = FileMetadataProto::decode(&raw_val[..])
+                .map_err(|e| {
+                    Error::Internal(format!("Failed to decode FileMetadata: {}", e))
+                })?;
+            let meta: FileMetadata = filemeta_proto.try_into().map_err(|e| {
+                Error::Internal(format!("Failed to convert FileMetadataProto to FileMetadata: {}", e))
+            })?;
             if meta.parent_id.as_ref() == Some(parent_id) {
                 children.push(meta);
             }
@@ -93,18 +132,37 @@ impl RocksMetadataStore {
     }
 
     fn save_mount_internal(&self, mount_info: &MountInfo) -> Result<()> {
-        let encoded = encode_value(mount_info)?;
+        tracing::info!("Saving mount info: {:?}", mount_info);
+        let key = kv_key_mount_path(&mount_info.path);
+        tracing::info!("save_mount key='{}' bytes={:?}", String::from_utf8_lossy(&key), key);
+        let m: MountInfoProto = mount_info.clone().into();
+        let mut val = Vec::new();
+        m.encode(&mut val).map_err(|e| {
+            Error::Internal(format!("Failed to encode Mount entry: {}", e))
+        })?;
+
         self.db
-            .put(kv_key_mount_path(&mount_info.path), encoded)
+            .put(&key, &val)
             .map_err(map_rocks_err)
     }
 
     fn get_mount_internal(&self, path: &str) -> Result<Option<MountInfo>> {
         let key = kv_key_mount_path(path);
         let value = self.db.get(key).map_err(map_rocks_err)?;
-        value
-            .map(|bytes| decode_value::<MountInfo>(&bytes))
-            .transpose()
+        let mount = match value {
+            Some(bytes) => {
+                let m_proto = MountInfoProto::decode(&bytes[..])
+                    .map_err(|e| {
+                        Error::Internal(format!("Failed to decode Mount entry: {}", e))
+                    })?;
+                let mount_info: MountInfo = m_proto.try_into().map_err(|e| {
+                    Error::Internal(format!("Failed to convert MountProto to MountInfo: {}", e))
+                })?;
+                Some(mount_info)
+            }
+            None => None,
+        };
+        Ok(mount)
     }
 
     fn delete_mount_internal(&self, path: &str) -> Result<()> {
@@ -114,18 +172,82 @@ impl RocksMetadataStore {
     }
 
     fn list_mounts_internal(&self) -> Result<Vec<MountInfo>> {
+        tracing::info!("list_mounts from prefix='{}'", String::from_utf8_lossy(MOUNT_PREFIX));
         let mut mounts = Vec::new();
         let mut iter = self
             .db
-            .iterator(IteratorMode::From(MOUNT_PREFIX, Direction::Forward));
+            .prefix_iterator(MOUNT_PREFIX);
         for kv in iter.by_ref() {
-            let (raw_key, raw_val) = kv.map_err(map_rocks_err)?;
+            let kv_res = kv.map_err(map_rocks_err);
+            let (raw_key, raw_val) = match kv_res {
+                Ok(kv) => kv,
+                Err(e) => {
+                    tracing::error!("Error iterating mounts: {}", e);
+                    // Egnore this error and continue
+                    continue;
+                }
+            };
             if !raw_key.starts_with(MOUNT_PREFIX) {
                 break;
             }
-            mounts.push(decode_value(&raw_val)?);
+            let decoded = MountInfoProto::decode(&raw_val[..])
+                .map_err(|e| {
+                    Error::Internal(format!("Failed to decode Mount entry: {}", e))
+                })
+                .and_then(|m_proto| {
+                    m_proto.try_into().map_err(|e| {
+                        Error::Internal(format!("Failed to convert MountProto to MountInfo: {}", e))
+                    })
+                });
+            let mount = match decoded {
+                Ok(mount) => mount,
+                Err(e) => {
+                    tracing::error!("Error decoding mount info: {}", e);
+                    // Ignore this error and continue
+                    continue;
+                }
+            };
+            mounts.push(mount);
         }
+        tracing::info!("Listed mounts: {:?}", mounts);
         Ok(mounts)
+    }
+
+
+    fn list_block_nodes_internal(&self) -> Result<Vec<BlockNode>> {
+        let mut nodes = Vec::new();
+        let mut iter = self
+            .db
+            .iterator(IteratorMode::From(b"block_node_", Direction::Forward));
+        for kv in iter.by_ref() {
+            let (raw_key, raw_val) = kv.map_err(map_rocks_err)?;
+            if !raw_key.starts_with(b"block_node_") {
+                break;
+            }
+            let blocknode_proto = BlockNodeProto::decode(&raw_val[..])
+                .map_err(|e| {
+                    Error::Internal(format!("Failed to decode BlockNode: {}", e))
+                })?;
+            let node: BlockNode = blocknode_proto.try_into().map_err(|e| {
+                Error::Internal(format!("Failed to convert BlockNodeProto to BlockNode: {}", e))
+            })?;
+            nodes.push(node);
+        }
+        Ok(nodes)
+    }
+
+    fn put_block_node_internal(&self, block_node: BlockNode) -> Result<()> {
+        let blocknode_proto: BlockNodeProto = block_node.clone().into();
+        let mut encoded = Vec::new();
+        blocknode_proto.encode(&mut encoded).map_err(|e| {
+            Error::Internal(format!("Failed to encode BlockNode: {}", e))
+        })?; 
+        self.db
+            .put(
+                format!("block_node_{}", block_node.node_id).as_bytes(),
+                encoded,
+            )
+            .map_err(map_rocks_err)
     }
 }
 
@@ -164,19 +286,16 @@ impl MetadataStore for RocksMetadataStore {
     }
 
     async fn list_mounts(&self) -> Result<Vec<MountInfo>> {
+        tracing::info!("Listing mounts");
         self.list_mounts_internal()
     }
 
-    async fn put_block_node(&self, _block_node: BlockNode) -> Result<()> {
-        Err(Error::Internal(
-            "put_block_node is not implemented in RocksMetadataStore".to_string(),
-        ))
+    async fn put_block_node(&self, block_node: BlockNode) -> Result<()> {
+        self.put_block_node_internal(block_node)
     }
 
     async fn list_block_nodes(&self) -> Result<Vec<BlockNode>> {
-        Err(Error::Internal(
-            "list_block_nodes is not implemented in RocksMetadataStore".to_string(),
-        ))
+        self.list_block_nodes_internal()
     }
 }
 

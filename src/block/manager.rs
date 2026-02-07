@@ -56,28 +56,19 @@ impl BlockManager {
     }
 
     pub async fn update_ring_nodes(&self) {
-        let nodes_proto = self.metadata_store.list_block_nodes().await;
-        let block_nodes = match nodes_proto {
-            Ok(ref protos) => {
-                let mut nodes = Vec::new();
-                for proto in protos {
-                    match BlockNode::try_from(proto.clone()) {
-                        Ok(node) => nodes.push(node),
-                        Err(e) => {
-                            tracing::error!("Failed to convert BlockNodeInfo to BlockNode: {}", e);
-                        }
-                    }
-                }
-                nodes
-            }
+        let block_nodes = self.metadata_store.list_block_nodes().await;
+        let nodes = match block_nodes {
             Err(e) => {
-                tracing::error!("Failed to fetch cache nodes from Raft: {}", e);
-                Vec::new()
+                tracing::error!("Failed to fetch block nodes from Metadata: {}", e);
+                return;
             }
+            Ok(nodes) => nodes,
         };
-        self.block_nodes.store(Arc::new(block_nodes.clone()));
 
-        let node_ids = block_nodes
+        // update block_nodes 
+        self.block_nodes.store(Arc::new(nodes.clone()));
+
+        let node_ids = nodes
             .iter()
             .map(|node| node.node_id.clone())
             .collect::<Vec<String>>();
