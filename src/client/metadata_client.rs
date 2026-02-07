@@ -15,6 +15,8 @@ use crate::{
     common::error::{Result, Error},
 };
 use tonic::{
+    Code,
+    Status,
     transport::Channel,
     Request,
 };
@@ -34,9 +36,10 @@ impl MetadataClient {
 
     pub async fn get(&self, path: String) -> Result<Option<FileMetadata>> {
         let mut client = self.client.clone();
+        let path_for_err = path.clone();
         let request = Request::new(GetRequest { path });
         let response = client.get(request).await
-            .map_err(|e| Error::Internal(format!("Failed to get metadata: {}", e)))?;
+            .map_err(|e| map_status("metadata.get", Some(&path_for_err), e))?;
         let res = response.into_inner();
         if res.found {
             Ok(res.metadata
@@ -57,7 +60,7 @@ impl MetadataClient {
         });
         let mut client = self.client.clone();
         client.put(request).await
-            .map_err(|e| Error::Internal(format!("Failed to put metadata: {}", e)))?;
+            .map_err(|e| map_status("metadata.put", None, e))?;
         Ok(())
     }
 
@@ -65,7 +68,7 @@ impl MetadataClient {
         let request = Request::new(crate::meta::DeleteRequest { path });
         let mut client = self.client.clone();
         client.delete(request).await
-            .map_err(|e| Error::Internal(format!("Failed to delete metadata: {}", e)))?;
+            .map_err(|e| map_status("metadata.delete", None, e))?;
         Ok(())
     }
 
@@ -75,7 +78,7 @@ impl MetadataClient {
         });
         let mut client = self.client.clone();
         let response = client.list_children(request).await
-            .map_err(|e| Error::Internal(format!("Failed to list children: {}", e)))?;
+            .map_err(|e| map_status("metadata.list_children", None, e))?;
         let res = response.into_inner();
         let mut children = Vec::new();
         for child in res.children {
@@ -90,7 +93,7 @@ impl MetadataClient {
         let request = Request::new(ListMountsRequest {});
         let mut client = self.client.clone();
         let response = client.list_mounts(request).await
-            .map_err(|e| Error::Internal(format!("Failed to list mounts: {}", e)))?;
+            .map_err(|e| map_status("metadata.list_mounts", None, e))?;
         let res = response.into_inner();
         let mount_list = res.mounts;
         let mut mount_list_converted = Vec::new();
@@ -108,7 +111,7 @@ impl MetadataClient {
         });
         let mut client = self.client.clone();
         client.put_mount(request).await
-            .map_err(|e| Error::Internal(format!("Failed to put mount: {}", e)))?;
+            .map_err(|e| map_status("metadata.put_mount", None, e))?;
         Ok(())
     }
 
@@ -118,7 +121,7 @@ impl MetadataClient {
         });
         let mut client = self.client.clone();
         client.delete_mount(request).await
-            .map_err(|e| Error::Internal(format!("Failed to delete mount: {}", e)))?;
+            .map_err(|e| map_status("metadata.delete_mount", Some(path), e))?;
         Ok(())
     }
 
@@ -127,7 +130,7 @@ impl MetadataClient {
         let request = Request::new(crate::meta::ListBlockNodesRequest {});
         let mut client = self.client.clone();
         let response = client.list_block_nodes(request).await
-            .map_err(|e| Error::Internal(format!("Failed to list block nodes: {}", e)))?;
+            .map_err(|e| map_status("metadata.list_block_nodes", None, e))?;
         let res = response.into_inner();
         let mut block_nodes = Vec::new();
         for bn in res.nodes {
@@ -136,5 +139,27 @@ impl MetadataClient {
             block_nodes.push(block_node);
         }
         Ok(block_nodes)
+    }
+}
+
+fn map_status(op: &str, path: Option<&str>, status: Status) -> Error {
+    match status.code() {
+        Code::NotFound => {
+            if let Some(p) = path {
+                Error::PathNotFound(p.to_string())
+            } else {
+                Error::Metadata(format!("{op}: not found: {}", status.message()))
+            }
+        }
+        Code::InvalidArgument => {
+            if let Some(p) = path {
+                Error::InvalidPath(format!("{p}: {}", status.message()))
+            } else {
+                Error::InvalidPath(format!("{op}: {}", status.message()))
+            }
+        }
+        Code::PermissionDenied => Error::PermissionDenied(format!("{op}: {}", status.message())),
+        Code::Unavailable => Error::Metadata(format!("{op}: unavailable: {}", status.message())),
+        _ => Error::Metadata(format!("{op}: {} ({})", status.message(), status.code())),
     }
 }

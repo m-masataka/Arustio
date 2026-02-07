@@ -19,6 +19,7 @@ use tokio::sync::RwLock;
 use tonic::{
     Request,
     async_trait,
+    Code,
     transport::Channel,
 };
 use futures::stream;
@@ -82,7 +83,13 @@ impl CacheClient for BlockNodeClient {
             .await
             .map_err(|e| {
                 tracing::debug!("Failed to read block: {}", e);
-                Error::Internal(format!("Failed to read block: {}", e))
+                match e.code() {
+                    Code::NotFound => Error::CacheMiss { file_id, index },
+                    Code::InvalidArgument => Error::InvalidPath(format!("Invalid block request: {}", e.message())),
+                    Code::PermissionDenied => Error::PermissionDenied(format!("Permission denied: {}", e.message())),
+                    Code::Unavailable => Error::Metadata(format!("Block node unavailable: {}", e.message())),
+                    _ => Error::Internal(format!("Failed to read block: {} ({})", e.message(), e.code())),
+                }
             })?;
 
         let mut stream = response.into_inner();
@@ -120,7 +127,12 @@ impl CacheClient for BlockNodeClient {
         node
             .write_block(Request::new(outbound))
             .await.map_err(|e| {
-                Error::Internal(format!("Failed to write block: {}", e))
+                match e.code() {
+                    Code::InvalidArgument => Error::InvalidPath(format!("Invalid block write: {}", e.message())),
+                    Code::PermissionDenied => Error::PermissionDenied(format!("Permission denied: {}", e.message())),
+                    Code::Unavailable => Error::Metadata(format!("Block node unavailable: {}", e.message())),
+                    _ => Error::Internal(format!("Failed to write block: {} ({})", e.message(), e.code())),
+                }
             })
             .and_then(|_response| {
                 Ok(())

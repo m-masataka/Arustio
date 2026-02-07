@@ -4,36 +4,25 @@ Arustio is a distributed file system in Rust inspired by Alluxio. A client-side 
 
 ## What It Is
 
-- **Client-side FileSystem (VFS)**: The client library owns the FileSystem API and talks to the metadata server and block nodes.
+- **Client-side FileSystem (VFS)**: The client library owns the FileSystem API and talks to the metadata server and block nodes, and accesses UFS directly.
 - **Metadata Server (Raft + RocksDB)**: Maintains the namespace, file metadata, and mount table with consistent reads/writes.
 - **Block Nodes (Cache)**: Serve cached file blocks. These are cache-only nodes.
-- **UFS (Unified Storage)**: Object storage backends (S3/MinIO, local, memory). The client FileSystem reads/writes UFS directly.
+- **UFS (Unified Storage)**: Object storage backends (S3/MinIO, local, memory). Only the client FileSystem reads/writes UFS directly (servers do not).
 
 ## Architecture (Current)
 
-```
-┌──────────────────────────────┐
-│   Client (FileSystem / VFS)  │
-│  - path ops / read / write   │
-│  - talks to Metadata Server  │
-│  - talks to Block Nodes      │
-│  - accesses UFS directly     │
-└───────────────┬──────────────┘
-                │
-        ┌───────┴────────┐
-        │                │
-┌───────▼────────┐  ┌────▼─────────┐
-│ Metadata Server│  │  Block Nodes │
-│ (Raft+RocksDB) │  │   (Cache)    │
-└───────┬────────┘  └────┬─────────┘
-        │                 
-        │          (cached blocks)
-        │
-        ▼
-┌──────────────────────────────┐
-│     UFS (Object Storage)     │
-│  S3 / MinIO / Local / Memory │
-└──────────────────────────────┘
+```mermaid
+flowchart TD
+  C["Client (FileSystem)<ul><li>path ops / read / write</li><li>talks to Metadata Server</li><li>reads via Block Nodes</li></ul>"]
+  M["Metadata Server<br> (Raft + RocksDB)"]
+  B["Block Nodes<br> (Cache)"]
+  U["UFS (Object Storage) <br>S3 / MinIO / Local / Memory"]
+
+  C --> M
+  C --> B
+  C -- "cache miss: read directly" --> U
+
+  style C width:300px
 ```
 
 More detail: `docs/architecture.md`.

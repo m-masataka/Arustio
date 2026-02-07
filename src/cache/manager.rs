@@ -1,6 +1,5 @@
 use std::{
     hash::{Hash, Hasher},
-    io::{self, ErrorKind},
     sync::Arc,
 };
 use crate::common::Result;
@@ -61,10 +60,7 @@ impl CacheManager {
         tracing::debug!("Reading block: file_id={}, index={}", file_id, index);
         match self.cache.get(&ChunkKey { file_id, index }).await {
             Some(chunk) => Ok(Bytes::from(chunk.as_ref().clone())),
-            None => Err(io::Error::new(
-                ErrorKind::NotFound,
-                format!("Chunk {} of file {} not found in cache", index, file_id),
-            ))?,
+            None => Err(crate::common::Error::CacheMiss { file_id, index }),
         }
     }
 }

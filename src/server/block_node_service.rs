@@ -5,7 +5,8 @@ use crate::{
         block_node_service_server::{ BlockNodeService, BlockNodeServiceServer },
         write_block_request
     },
-    cache::manager::CacheManager
+    cache::manager::CacheManager,
+    common::Error as ArustioError,
 };
 use std::sync::Arc;
 use tonic::{Request, Response, Status, Streaming};
@@ -69,6 +70,7 @@ impl BlockNodeService for BlockNodeServiceImpl {
                 }
                 Ok(Response::new(ReceiverStream::new(rx)))
             }
+            Err(ArustioError::CacheMiss { .. }) => Err(Status::not_found("Cache miss")),
             Err(e) => Err(Status::internal(format!("Failed to read block: {}", e))),
         }
     }

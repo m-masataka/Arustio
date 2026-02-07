@@ -9,10 +9,8 @@ use crate::{
     common::Result,
     core::file_metadata::FileMetadata,
     core::file_metadata::MountInfo,
-    ufs::config::UfsConfig,
     block::node::BlockNode,
 };
-use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 /// Trait for metadata storage operations

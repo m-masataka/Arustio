@@ -1,4 +1,5 @@
 use thiserror::Error;
+use uuid::Uuid;
 
 #[derive(Error, Debug)]
 pub enum Error {
@@ -34,6 +35,9 @@ pub enum Error {
 
     #[error("Internal error: {0}")]
     Internal(String),
+
+    #[error("Cache miss: file_id={file_id}, index={index}")]
+    CacheMiss { file_id: Uuid, index: u64 },
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

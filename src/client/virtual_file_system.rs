@@ -313,36 +313,70 @@ impl FileSystem for VirtualFileSystem {
                 // Track hit rate
                 let mut tracker = HitRateTracker::new(path_for_log, file_id);
                 for block in blocks {
-                    if let Ok(data) = cache.read_block(metadata.id, block.index).await {
-                        tracker.hit();
-                        yield data;
-                    } else {
-                        tracker.miss();
-                        // Read from UFS
-                        let start = block.range_start;
-                        let end = block.range_end;
-                        let ufs_bytes = ufs.read_range(&relative_path, start, end).await?;
-                        // Store in cache asynchronously
-                        let cache_for_store = cache.clone();
-                        let file_id_for_store = metadata.id;
-                        let index_for_store = block.index;
-                        let bytes_for_store = ufs_bytes.clone();
-                        tokio::spawn(async move {
-                            if let Err(e) = cache_for_store
-                                .write_block(file_id_for_store, index_for_store, bytes_for_store)
-                                .await
-                            {
-                                tracing::warn!(
-                                    "failed to store block {} of file {} into cache: {}",
-                                    index_for_store,
-                                    file_id_for_store,
-                                    e
-                                );
-                            }
-                        });
-                        yield ufs_bytes;
+                    match cache.read_block(metadata.id, block.index).await {
+                        Ok(data) => {
+                            tracker.hit();
+                            yield data;
+                        }
+                        Err(Error::CacheMiss { .. }) => {
+                            tracker.miss();
+                            // Read from UFS
+                            let start = block.range_start;
+                            let end = block.range_end;
+                            let ufs_bytes = ufs.read_range(&relative_path, start, end).await?;
+                            // Store in cache asynchronously
+                            let cache_for_store = cache.clone();
+                            let file_id_for_store = metadata.id;
+                            let index_for_store = block.index;
+                            let bytes_for_store = ufs_bytes.clone();
+                            tokio::spawn(async move {
+                                if let Err(e) = cache_for_store
+                                    .write_block(file_id_for_store, index_for_store, bytes_for_store)
+                                    .await
+                                {
+                                    tracing::warn!(
+                                        "failed to store block {} of file {} into cache: {}",
+                                        index_for_store,
+                                        file_id_for_store,
+                                        e
+                                    );
+                                }
+                            });
+                            yield ufs_bytes;
+                        }
+                        Err(e) => {
+                            tracker.miss();
+                            tracing::warn!(
+                                "cache read error for file {} block {}: {}",
+                                metadata.id,
+                                block.index,
+                                e
+                            );
+                            // Read from UFS
+                            let start = block.range_start;
+                            let end = block.range_end;
+                            let ufs_bytes = ufs.read_range(&relative_path, start, end).await?;
+                            // Store in cache asynchronously
+                            let cache_for_store = cache.clone();
+                            let file_id_for_store = metadata.id;
+                            let index_for_store = block.index;
+                            let bytes_for_store = ufs_bytes.clone();
+                            tokio::spawn(async move {
+                                if let Err(e) = cache_for_store
+                                    .write_block(file_id_for_store, index_for_store, bytes_for_store)
+                                    .await
+                                {
+                                    tracing::warn!(
+                                        "failed to store block {} of file {} into cache: {}",
+                                        index_for_store,
+                                        file_id_for_store,
+                                        e
+                                    );
+                                }
+                            });
+                            yield ufs_bytes;
+                        }
                     }
-
                 }
             }.boxed();
             return Ok((metadata, stream));
@@ -450,14 +484,31 @@ impl FileSystem for VirtualFileSystem {
         self.cache.connection_pool().await?;
 
         // Check cache first
-        if let Ok(bytes) = self.cache.read_block(file_id, block_desc.index).await {
-            let cached_stream = futures::stream::once(async move { Ok(bytes) }).boxed();
-            tracing::debug!(
-                "Cache hit for block {} of file {}",
-                block_desc.index,
-                normalized_path
-            );
-            return Ok(cached_stream);
+        match self.cache.read_block(file_id, block_desc.index).await {
+            Ok(bytes) => {
+                let cached_stream = futures::stream::once(async move { Ok(bytes) }).boxed();
+                tracing::debug!(
+                    "Cache hit for block {} of file {}",
+                    block_desc.index,
+                    normalized_path
+                );
+                return Ok(cached_stream);
+            }
+            Err(Error::CacheMiss { .. }) => {
+                tracing::debug!(
+                    "Cache miss for block {} of file {}",
+                    block_desc.index,
+                    normalized_path
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "Cache read error for block {} of file {}: {}",
+                    block_desc.index,
+                    normalized_path,
+                    e
+                );
+            }
         }
 
         // TODO: range_read is not implemented as streaming in UFS yet

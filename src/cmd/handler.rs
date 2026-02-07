@@ -203,7 +203,6 @@ async fn handle_copy_from_local(
 ) -> anyhow::Result<()> {
     println!("Copying {} to {}", local_path, remote_path);
     let file = File::open(&local_path).await?;
-    const CHUNK: usize = 1024 * 1024;
     let stream = ReaderStream::new(file)
         .map(|r| r.map_err(|e| crate::common::error::Error::Io(e)));
     vfs.write(&remote_path, Box::pin(stream)).await?;

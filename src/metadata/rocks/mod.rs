@@ -1,11 +1,8 @@
 use std::path::Path;
 use std::sync::Arc;
 use async_trait::async_trait;
-use bincode;
 use prost::Message;
 use rocksdb::{DBWithThreadMode, Direction, IteratorMode, MultiThreaded, Options, WriteBatch};
-use serde::Serialize;
-use serde::de::DeserializeOwned;
 use uuid::Uuid;
 
 use crate::{
@@ -297,16 +294,6 @@ impl MetadataStore for RocksMetadataStore {
     async fn list_block_nodes(&self) -> Result<Vec<BlockNode>> {
         self.list_block_nodes_internal()
     }
-}
-
-fn encode_value<T: Serialize>(value: &T) -> Result<Vec<u8>> {
-    bincode::serialize(value)
-        .map_err(|e| Error::Serialization(format!("Failed to serialize metadata: {e}")))
-}
-
-fn decode_value<T: DeserializeOwned>(bytes: &[u8]) -> Result<T> {
-    bincode::deserialize(bytes)
-        .map_err(|e| Error::Serialization(format!("Failed to deserialize metadata: {e}")))
 }
 
 fn map_rocks_err(err: rocksdb::Error) -> Error {
