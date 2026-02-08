@@ -66,6 +66,33 @@ services:
       - ./config.toml:/app/config.toml:ro
     networks:
       - arustio-network
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 50052"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # Arustio FUSE Client (Linux)
+  arustio-fuse:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: arustio-fuse
+    depends_on:
+      arustio:
+        condition: service_healthy
+    command: ["/bin/sh", "-lc", "mkdir -p /mnt/arustio && arustio fuse --server http://arustio:50052 --mountpoint /mnt/arustio"]
+    devices:
+      - /dev/fuse:/dev/fuse
+    cap_add:
+      - SYS_ADMIN
+    security_opt:
+      - apparmor:unconfined
+    volumes:
+      - ./config.toml:/app/config.toml:ro
+      - ./bench/fio-bench.sh:/app/fio-bench.sh
+    networks:
+      - arustio-network
       
 volumes:
   minio-data:

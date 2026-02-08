@@ -56,6 +56,8 @@ toml = "0.9.8"
 
 arc-swap = "1.8.0"
 moka = { version = "0.12.12", features = ["future"] }
+fuser = "0.15.1"
+libc = "0.2"
 
 
 clap = { version = "4.5", features = ["derive"] }

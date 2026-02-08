@@ -59,6 +59,36 @@ sleep 10
 
 MinIO console: `http://localhost:9001` (default: `minioadmin` / `minioadmin`).
 
+## Quick Start (FUSE, Linux)
+
+Requires `fusermount3` and FUSE support on the host.
+
+```bash
+# start servers
+docker-compose up -d
+
+# build client locally
+cargo build --release
+
+# mount point
+sudo mkdir -p /mnt/arustio
+
+# mount
+./target/release/arustio fuse --server http://localhost:50051 --mountpoint /mnt/arustio
+```
+
+Test:
+```bash
+ls /mnt/arustio
+echo hello > /mnt/arustio/hello.txt
+cat /mnt/arustio/hello.txt
+```
+
+Unmount:
+```bash
+sudo fusermount3 -u /mnt/arustio
+```
+
 ## CLI (arustio)
 
 ```bash

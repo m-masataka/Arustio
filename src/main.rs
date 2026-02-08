@@ -15,6 +15,7 @@ use arustio::{
         Error, NodeConfig, Result, RuntimeConfig, cache_capacity_bytes, raft_client::RaftClient,
         set_runtime_config,
     },
+    fuse::ArustioFuse,
     metadata::{
         RocksMetadataStore,
         metadata::MetadataStore,
@@ -85,6 +86,16 @@ enum Commands {
         #[arg(short, long, default_value = "http://localhost:50051")]
         server: String,
     },
+    /// FUSE mount (Linux)
+    Fuse {
+        /// Server address to connect to
+        #[arg(short, long, default_value = "http://localhost:50051")]
+        server: String,
+
+        /// Mount point (e.g. /mnt/arustio)
+        #[arg(long)]
+        mountpoint: String,
+    },
 }
 
 #[tokio::main]
@@ -147,6 +158,22 @@ async fn main() -> Result<()> {
             let res = handle_fs_command(fs_command, vfs).await;
             tracing::info!("FS command completed with result: {:?}", res);
             Ok(())
+        }
+        Commands::Fuse { server, mountpoint } => {
+            let metadata_client = MetadataClient::new(server.clone())
+                .await
+                .map_err(|e| Error::Internal(format!("Failed to create MetadataClient: {}", e)))?;
+
+            let cache_client = BlockNodeClient::new(metadata_client.clone());
+            let vfs = ClientFileSystem::new(metadata_client, Arc::new(cache_client));
+
+            let fs = ArustioFuse::new(vfs);
+            tokio::task::spawn_blocking(move || {
+                fs.mount(&mountpoint)
+                    .map_err(|e| Error::Internal(format!("Failed to mount FUSE: {}", e)))
+            })
+            .await
+            .map_err(|e| Error::Internal(format!("FUSE task join error: {}", e)))?
         }
     }
 }

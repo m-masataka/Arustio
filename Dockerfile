@@ -1,7 +1,7 @@
 FROM rust:1.91 as builder
 WORKDIR /app
 
-RUN apt update && apt install -y clang llvm-dev libclang-dev protobuf-compiler \
+RUN apt update && apt install -y clang llvm-dev libclang-dev protobuf-compiler pkg-config libfuse3-dev \
  && rm -rf /var/lib/apt/lists/*
 
 # Copy manifests
@@ -30,10 +30,9 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 ############################
 # Runtime
 ############################
-# FROM debian:bookworm-slim AS runtime
 FROM debian:trixie-slim AS runtime
 WORKDIR /app
-RUN apt-get update && apt-get install -y --no-install-recommends libstdc++6 ca-certificates \
+RUN apt-get update && apt-get install -y --no-install-recommends libstdc++6 ca-certificates libfuse3-dev fuse3 netcat-openbsd fio \
  && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /tmp/arustio /usr/local/bin/arustio

@@ -4,6 +4,7 @@ pub mod client;
 pub mod cmd;
 pub mod common;
 pub mod core;
+pub mod fuse;
 pub mod metadata;
 pub mod server;
 pub mod ufs;
