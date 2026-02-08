@@ -25,6 +25,9 @@ pub trait FileSystem: Send + Sync {
     /// Read a file
     async fn read(&self, path: &str) -> Result<(FileMetadata, BoxStream<'static, Result<Bytes>>)>;
 
+    /// Read a range of a file (offset + size)
+    async fn read_range(&self, path: &str, offset: u64, size: u64) -> Result<Bytes>;
+
     /// Read blocks of a file
     async fn read_block(
         &self,

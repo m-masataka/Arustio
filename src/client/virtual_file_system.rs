@@ -400,7 +400,8 @@ impl FileSystem for VirtualFileSystem {
                         }
                     }
                 }
-            }.boxed();
+            }
+            .boxed();
             return Ok((metadata, stream));
         }
 
@@ -461,11 +462,7 @@ impl FileSystem for VirtualFileSystem {
                             normalized_path_for_stream
                         );
                         cache_for_store
-                            .write_block(
-                                file_id,
-                                block.clone().index,
-                                data.clone(),
-                            )
+                            .write_block(file_id, block.clone().index, data.clone())
                             .await?;
 
                         block_idx += 1;
@@ -479,17 +476,83 @@ impl FileSystem for VirtualFileSystem {
                 let block = &blocks_for_cache[block_idx];
                 let data = Bytes::from(block_buf.freeze());
                 cache_for_store
-                    .write_block(
-                        file_id,
-                        block.clone().index,
-                        data.clone(),
-                    )
+                    .write_block(file_id, block.clone().index, data.clone())
                     .await?;
             }
         }
         .boxed();
         self.metadata_client.put(new_metadata.clone()).await?;
         Ok((new_metadata, tee_stream))
+    }
+
+    async fn read_range(&self, path: &str, offset: u64, size: u64) -> Result<Bytes> {
+        let normalized_path = normalize_path(path)?;
+        let (ufs, relative_path, _mount_path) = self.get_mount_for_path(&normalized_path).await?;
+
+        let metadata = self
+            .metadata_client
+            .get(normalized_path.clone())
+            .await?
+            .ok_or_else(|| Error::PathNotFound(normalized_path.clone()))?;
+        if !metadata.is_file() {
+            return Err(Error::NotAFile(normalized_path));
+        }
+        if size == 0 || offset >= metadata.size {
+            return Ok(Bytes::new());
+        }
+
+        let end = std::cmp::min(offset + size, metadata.size);
+        let blocks = plan_chunk_layout(metadata.size).await;
+        let cache = self.cache.clone();
+        cache.connection_pool().await?;
+
+        let mut out = BytesMut::new();
+        for block in blocks {
+            if block.range_end <= offset || block.range_start >= end {
+                continue;
+            }
+            let block_bytes = match cache.read_block(metadata.id, block.index).await {
+                Ok(data) => data,
+                Err(Error::CacheMiss { .. }) => {
+                    let ufs_bytes = ufs
+                        .read_range(&relative_path, block.range_start, block.range_end)
+                        .await?;
+                    let cache_for_store = cache.clone();
+                    let file_id_for_store = metadata.id;
+                    let index_for_store = block.index;
+                    let bytes_for_store = ufs_bytes.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = cache_for_store
+                            .write_block(file_id_for_store, index_for_store, bytes_for_store)
+                            .await
+                        {
+                            tracing::warn!(
+                                "failed to store block {} of file {} into cache: {}",
+                                index_for_store,
+                                file_id_for_store,
+                                e
+                            );
+                        }
+                    });
+                    ufs_bytes
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "cache read error for file {} block {}: {}",
+                        metadata.id,
+                        block.index,
+                        e
+                    );
+                    ufs.read_range(&relative_path, block.range_start, block.range_end)
+                        .await?
+                }
+            };
+
+            let slice_start = std::cmp::max(offset, block.range_start) - block.range_start;
+            let slice_end = std::cmp::min(end, block.range_end) - block.range_start;
+            out.extend_from_slice(&block_bytes[slice_start as usize..slice_end as usize]);
+        }
+        Ok(Bytes::from(out))
     }
 
     async fn read_block(

@@ -347,20 +347,18 @@ impl Filesystem for ArustioFuse {
             reply.error(ENOENT);
             return;
         };
-        let data = match self.read_all(&path) {
-            Ok(d) => d,
-            Err(Error::PathNotFound(_)) => {
-                reply.error(ENOENT);
-                return;
-            }
-            Err(_) => {
-                reply.error(EIO);
-                return;
-            }
-        };
-        let start = offset.max(0) as usize;
-        let end = std::cmp::min(start + size as usize, data.len());
-        reply.data(&data[start..end]);
+        if offset < 0 {
+            reply.error(EINVAL);
+            return;
+        }
+        let res = self
+            .rt
+            .block_on(async { self.vfs.read_range(&path, offset as u64, size as u64).await });
+        match res {
+            Ok(data) => reply.data(&data),
+            Err(Error::PathNotFound(_)) => reply.error(ENOENT),
+            Err(_) => reply.error(EIO),
+        }
     }
 
     fn write(
