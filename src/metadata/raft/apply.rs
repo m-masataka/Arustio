@@ -2,7 +2,8 @@ use crate::common::{Error, Result};
 use crate::meta::{MetaCmd, Mount, meta_cmd::Op};
 use crate::metadata::raft::rocks_store::RocksStorage;
 use crate::metadata::utils::{
-    kv_block_meta_key, kv_block_node_key, kv_key_mount_path, kv_key_path, u64be_bytes,
+    kv_block_meta_key, kv_block_node_key, kv_key_mount_path, kv_key_path, kv_path_conf_key,
+    u64be_bytes,
 };
 use prost::Message;
 use rocksdb::WriteBatch;
@@ -82,6 +83,14 @@ pub fn apply_to_kv(st: &RocksStorage, cmd: MetaCmd) -> Result<()> {
             let mut val = Vec::new();
             p.encode(&mut val).map_err(|e| {
                 Error::Internal(format!("Failed to encode PutBlockMeta entry: {}", e))
+            })?;
+            wb.put_cf(&st.cf_kv, key, val);
+        }
+        Some(Op::PutPathConf(p)) => {
+            let key = kv_path_conf_key(p.full_path.clone());
+            let mut val = Vec::new();
+            p.encode(&mut val).map_err(|e| {
+                Error::Internal(format!("Failed to encode PutPathConf entry: {}", e))
             })?;
             wb.put_cf(&st.cf_kv, key, val);
         }

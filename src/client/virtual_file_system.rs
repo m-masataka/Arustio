@@ -22,7 +22,7 @@ use futures::{
     StreamExt,
     stream::{self, BoxStream},
 };
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 #[derive(Debug)]
 struct HitRateTracker {
@@ -74,6 +74,24 @@ impl Drop for HitRateTracker {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WriteType {
+    AsyncThrough,
+    CacheThrough,
+    NoCache,
+}
+
+fn parse_write_type(value: &str) -> Result<WriteType> {
+    match value.to_ascii_uppercase().as_str() {
+        "ASYNC_THROUGH" => Ok(WriteType::AsyncThrough),
+        "CACHE_THROUGH" => Ok(WriteType::CacheThrough),
+        "NO_CACHE" => Ok(WriteType::NoCache),
+        _ => Err(Error::InvalidPath(format!(
+            "invalid writetype: {value} (use ASYNC_THROUGH|CACHE_THROUGH|NO_CACHE)"
+        ))),
+    }
+}
+
 /// Virtual File System with mount table support
 pub struct VirtualFileSystem {
     metadata_client: MetadataClient,
@@ -92,6 +110,46 @@ impl VirtualFileSystem {
     /// Restore mounts from metadata store
     pub async fn restore_mounts(&self) -> Result<()> {
         // self.mount_table.restore_mounts().await
+        Ok(())
+    }
+
+    async fn write_type_for_path(&self, path: &str) -> Result<WriteType> {
+        let mut current = normalize_path(path)?;
+        loop {
+            if let Some(conf) = self.metadata_client.get_path_conf(current.clone()).await? {
+                if let Some(value) = conf.conf.get("writetype") {
+                    return parse_write_type(value);
+                }
+            }
+            if let Some(parent) = parent_path(&current) {
+                current = parent;
+            } else {
+                break;
+            }
+        }
+        Ok(WriteType::CacheThrough)
+    }
+
+    pub async fn set_path_conf(&self, path: &str, conf: HashMap<String, String>) -> Result<()> {
+        let normalized_path = normalize_path(path)?;
+        let meta = self
+            .metadata_client
+            .get(normalized_path.clone())
+            .await?
+            .ok_or_else(|| Error::PathNotFound(normalized_path.clone()))?;
+        if !meta.is_directory() {
+            return Err(Error::NotADirectory(normalized_path));
+        }
+
+        if let Some(value) = conf.get("writetype") {
+            parse_write_type(value)?;
+        }
+
+        let conf = crate::meta::PathConf {
+            full_path: normalized_path,
+            conf,
+        };
+        self.metadata_client.set_path_conf(conf).await?;
         Ok(())
     }
 
@@ -320,13 +378,17 @@ impl FileSystem for VirtualFileSystem {
     async fn read(&self, path: &str) -> Result<(FileMetadata, BoxStream<'static, Result<Bytes>>)> {
         let normalized_path = normalize_path(path)?;
         let (ufs, relative_path, _mount_path) = self.get_mount_for_path(&normalized_path).await?;
+        let write_type = self.write_type_for_path(&normalized_path).await?;
+        let cache_enabled = write_type != WriteType::NoCache;
         if let Some(metadata) = self.metadata_client.get(normalized_path.clone()).await? {
             if !metadata.is_file() {
                 return Err(Error::NotAFile(normalized_path));
             }
             let blocks = plan_chunk_layout(metadata.size).await;
             let cache = self.cache.clone();
-            cache.connection_pool().await?;
+            if cache_enabled {
+                cache.connection_pool().await?;
+            }
 
             let path_for_log = normalized_path.clone();
             let file_id = metadata.id;
@@ -335,69 +397,85 @@ impl FileSystem for VirtualFileSystem {
                 // Track hit rate
                 let mut tracker = HitRateTracker::new(path_for_log, file_id);
                 for block in blocks {
-                    match cache.read_block(metadata.id, block.index).await {
-                        Ok(data) => {
-                            tracker.hit();
-                            yield data;
+                    if cache_enabled {
+                        match cache.read_block(metadata.id, block.index).await {
+                            Ok(data) => {
+                                tracker.hit();
+                                yield data;
+                            }
+                            Err(Error::CacheMiss { .. }) => {
+                                tracker.miss();
+                                // Read from UFS
+                                let start = block.range_start;
+                                let end = block.range_end;
+                                let ufs_bytes = ufs.read_range(&relative_path, start, end).await?;
+                                // Store in cache asynchronously
+                                let cache_for_store = cache.clone();
+                                let file_id_for_store = metadata.id;
+                                let index_for_store = block.index;
+                                let bytes_for_store = ufs_bytes.clone();
+                                tokio::spawn(async move {
+                                    if let Err(e) = cache_for_store
+                                        .write_block(
+                                            file_id_for_store,
+                                            index_for_store,
+                                            bytes_for_store,
+                                        )
+                                        .await
+                                    {
+                                        tracing::warn!(
+                                            "failed to store block {} of file {} into cache: {}",
+                                            index_for_store,
+                                            file_id_for_store,
+                                            e
+                                        );
+                                    }
+                                });
+                                yield ufs_bytes;
+                            }
+                            Err(e) => {
+                                tracker.miss();
+                                tracing::warn!(
+                                    "cache read error for file {} block {}: {}",
+                                    metadata.id,
+                                    block.index,
+                                    e
+                                );
+                                // Read from UFS
+                                let start = block.range_start;
+                                let end = block.range_end;
+                                let ufs_bytes = ufs.read_range(&relative_path, start, end).await?;
+                                // Store in cache asynchronously
+                                let cache_for_store = cache.clone();
+                                let file_id_for_store = metadata.id;
+                                let index_for_store = block.index;
+                                let bytes_for_store = ufs_bytes.clone();
+                                tokio::spawn(async move {
+                                    if let Err(e) = cache_for_store
+                                        .write_block(
+                                            file_id_for_store,
+                                            index_for_store,
+                                            bytes_for_store,
+                                        )
+                                        .await
+                                    {
+                                        tracing::warn!(
+                                            "failed to store block {} of file {} into cache: {}",
+                                            index_for_store,
+                                            file_id_for_store,
+                                            e
+                                        );
+                                    }
+                                });
+                                yield ufs_bytes;
+                            }
                         }
-                        Err(Error::CacheMiss { .. }) => {
-                            tracker.miss();
-                            // Read from UFS
-                            let start = block.range_start;
-                            let end = block.range_end;
-                            let ufs_bytes = ufs.read_range(&relative_path, start, end).await?;
-                            // Store in cache asynchronously
-                            let cache_for_store = cache.clone();
-                            let file_id_for_store = metadata.id;
-                            let index_for_store = block.index;
-                            let bytes_for_store = ufs_bytes.clone();
-                            tokio::spawn(async move {
-                                if let Err(e) = cache_for_store
-                                    .write_block(file_id_for_store, index_for_store, bytes_for_store)
-                                    .await
-                                {
-                                    tracing::warn!(
-                                        "failed to store block {} of file {} into cache: {}",
-                                        index_for_store,
-                                        file_id_for_store,
-                                        e
-                                    );
-                                }
-                            });
-                            yield ufs_bytes;
-                        }
-                        Err(e) => {
-                            tracker.miss();
-                            tracing::warn!(
-                                "cache read error for file {} block {}: {}",
-                                metadata.id,
-                                block.index,
-                                e
-                            );
-                            // Read from UFS
-                            let start = block.range_start;
-                            let end = block.range_end;
-                            let ufs_bytes = ufs.read_range(&relative_path, start, end).await?;
-                            // Store in cache asynchronously
-                            let cache_for_store = cache.clone();
-                            let file_id_for_store = metadata.id;
-                            let index_for_store = block.index;
-                            let bytes_for_store = ufs_bytes.clone();
-                            tokio::spawn(async move {
-                                if let Err(e) = cache_for_store
-                                    .write_block(file_id_for_store, index_for_store, bytes_for_store)
-                                    .await
-                                {
-                                    tracing::warn!(
-                                        "failed to store block {} of file {} into cache: {}",
-                                        index_for_store,
-                                        file_id_for_store,
-                                        e
-                                    );
-                                }
-                            });
-                            yield ufs_bytes;
-                        }
+                    } else {
+                        tracker.miss();
+                        let start = block.range_start;
+                        let end = block.range_end;
+                        let ufs_bytes = ufs.read_range(&relative_path, start, end).await?;
+                        yield ufs_bytes;
                     }
                 }
             }
@@ -421,7 +499,9 @@ impl FileSystem for VirtualFileSystem {
         let file_id = new_metadata_id;
         tracing::info!("file_id={}", file_id);
         let cache_for_store = self.cache.clone();
-        cache_for_store.connection_pool().await?;
+        if cache_enabled {
+            cache_for_store.connection_pool().await?;
+        }
 
         let ufs_stream = ufs_read_stream;
         let normalized_path_for_stream = normalized_path.clone();
@@ -461,9 +541,11 @@ impl FileSystem for VirtualFileSystem {
                             block.index,
                             normalized_path_for_stream
                         );
-                        cache_for_store
-                            .write_block(file_id, block.clone().index, data.clone())
-                            .await?;
+                        if cache_enabled {
+                            cache_for_store
+                                .write_block(file_id, block.clone().index, data.clone())
+                                .await?;
+                        }
 
                         block_idx += 1;
                         pos_in_block = 0;
@@ -475,9 +557,11 @@ impl FileSystem for VirtualFileSystem {
             if !block_buf.is_empty() && block_idx < blocks_for_cache.len() {
                 let block = &blocks_for_cache[block_idx];
                 let data = Bytes::from(block_buf.freeze());
-                cache_for_store
-                    .write_block(file_id, block.clone().index, data.clone())
-                    .await?;
+                if cache_enabled {
+                    cache_for_store
+                        .write_block(file_id, block.clone().index, data.clone())
+                        .await?;
+                }
             }
         }
         .boxed();
@@ -488,6 +572,8 @@ impl FileSystem for VirtualFileSystem {
     async fn read_range(&self, path: &str, offset: u64, size: u64) -> Result<Bytes> {
         let normalized_path = normalize_path(path)?;
         let (ufs, relative_path, _mount_path) = self.get_mount_for_path(&normalized_path).await?;
+        let write_type = self.write_type_for_path(&normalized_path).await?;
+        let cache_enabled = write_type != WriteType::NoCache;
 
         let metadata = self
             .metadata_client
@@ -504,48 +590,55 @@ impl FileSystem for VirtualFileSystem {
         let end = std::cmp::min(offset + size, metadata.size);
         let blocks = plan_chunk_layout(metadata.size).await;
         let cache = self.cache.clone();
-        cache.connection_pool().await?;
+        if cache_enabled {
+            cache.connection_pool().await?;
+        }
 
         let mut out = BytesMut::new();
         for block in blocks {
             if block.range_end <= offset || block.range_start >= end {
                 continue;
             }
-            let block_bytes = match cache.read_block(metadata.id, block.index).await {
-                Ok(data) => data,
-                Err(Error::CacheMiss { .. }) => {
-                    let ufs_bytes = ufs
-                        .read_range(&relative_path, block.range_start, block.range_end)
-                        .await?;
-                    let cache_for_store = cache.clone();
-                    let file_id_for_store = metadata.id;
-                    let index_for_store = block.index;
-                    let bytes_for_store = ufs_bytes.clone();
-                    tokio::spawn(async move {
-                        if let Err(e) = cache_for_store
-                            .write_block(file_id_for_store, index_for_store, bytes_for_store)
-                            .await
-                        {
-                            tracing::warn!(
-                                "failed to store block {} of file {} into cache: {}",
-                                index_for_store,
-                                file_id_for_store,
-                                e
-                            );
-                        }
-                    });
-                    ufs_bytes
+            let block_bytes = if cache_enabled {
+                match cache.read_block(metadata.id, block.index).await {
+                    Ok(data) => data,
+                    Err(Error::CacheMiss { .. }) => {
+                        let ufs_bytes = ufs
+                            .read_range(&relative_path, block.range_start, block.range_end)
+                            .await?;
+                        let cache_for_store = cache.clone();
+                        let file_id_for_store = metadata.id;
+                        let index_for_store = block.index;
+                        let bytes_for_store = ufs_bytes.clone();
+                        tokio::spawn(async move {
+                            if let Err(e) = cache_for_store
+                                .write_block(file_id_for_store, index_for_store, bytes_for_store)
+                                .await
+                            {
+                                tracing::warn!(
+                                    "failed to store block {} of file {} into cache: {}",
+                                    index_for_store,
+                                    file_id_for_store,
+                                    e
+                                );
+                            }
+                        });
+                        ufs_bytes
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "cache read error for file {} block {}: {}",
+                            metadata.id,
+                            block.index,
+                            e
+                        );
+                        ufs.read_range(&relative_path, block.range_start, block.range_end)
+                            .await?
+                    }
                 }
-                Err(e) => {
-                    tracing::warn!(
-                        "cache read error for file {} block {}: {}",
-                        metadata.id,
-                        block.index,
-                        e
-                    );
-                    ufs.read_range(&relative_path, block.range_start, block.range_end)
-                        .await?
-                }
+            } else {
+                ufs.read_range(&relative_path, block.range_start, block.range_end)
+                    .await?
             };
 
             let slice_start = std::cmp::max(offset, block.range_start) - block.range_start;

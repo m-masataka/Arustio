@@ -4,10 +4,11 @@ use crate::{
     core::file_metadata::MountInfo,
     meta::{
         DeleteMountRequest, DeleteMountResponse, DeleteRequest, DeleteResponse, GetByIdRequest,
-        GetByIdResponse, GetMountRequest, GetMountResponse, GetRequest, GetResponse,
-        ListBlockNodesRequest, ListBlockNodesResponse, ListChildrenRequest, ListChildrenResponse,
-        ListMountsRequest, ListMountsResponse, PutMountRequest, PutMountResponse, PutRequest,
-        PutResponse,
+        GetByIdResponse, GetMountRequest, GetMountResponse, GetPathConfRequest,
+        GetPathConfResponse, GetRequest, GetResponse, ListBlockNodesRequest,
+        ListBlockNodesResponse, ListChildrenRequest, ListChildrenResponse, ListMountsRequest,
+        ListMountsResponse, PutMountRequest, PutMountResponse, PutRequest, PutResponse,
+        SetPathConfRequest, SetPathConfResponse,
         metadata_service_server::{MetadataService, MetadataServiceServer},
     },
     metadata::metadata::MetadataStore,
@@ -220,6 +221,49 @@ impl MetadataService for MetadataServiceImpl {
 
         let response = ListBlockNodesResponse {
             nodes: block_nodes.into_iter().map(|bn| bn.into()).collect(),
+        };
+        Ok(Response::new(response))
+    }
+
+    async fn set_path_conf(
+        &self,
+        request: Request<SetPathConfRequest>,
+    ) -> Result<Response<SetPathConfResponse>, Status> {
+        let req = request.into_inner();
+        let conf = req
+            .conf
+            .ok_or_else(|| Status::invalid_argument("Missing path conf"))?;
+        self.metadata_store
+            .set_path_conf(conf)
+            .await
+            .map_err(|e| Status::internal(format!("Metadata store error: {}", e)))?;
+        let response = SetPathConfResponse { created: true };
+        Ok(Response::new(response))
+    }
+
+    async fn get_path_conf(
+        &self,
+        request: Request<GetPathConfRequest>,
+    ) -> Result<Response<GetPathConfResponse>, Status> {
+        let path = request.into_inner().path;
+        let conf_opt = self
+            .metadata_store
+            .get_path_conf(&path)
+            .await
+            .map_err(|e| Status::internal(format!("Metadata store error: {}", e)))?;
+        let conf = match conf_opt {
+            None => {
+                return Ok(Response::new(GetPathConfResponse {
+                    conf: None,
+                    found: false,
+                }))
+            }
+            Some(c) => c,
+        };
+
+        let response = GetPathConfResponse {
+            conf: Some(conf.into()),
+            found: true,
         };
         Ok(Response::new(response))
     }

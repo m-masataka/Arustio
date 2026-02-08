@@ -8,12 +8,17 @@ use crate::{
     },
     core::file_metadata::FileMetadata,
     core::file_metadata::MountInfo,
-    meta::{FileMetadata as ProtoFileMetadata, MetaCmd, Mount, PutFileMeta, Unmount, meta_cmd},
+    meta::{
+        FileMetadata as ProtoFileMetadata, MetaCmd, Mount, PathConf, PutFileMeta, PutPathConf,
+        Unmount, meta_cmd,
+    },
     metadata::{
         metadata::MetadataStore,
         raft::linearizable_read::LinearizableReadHandle,
         raft::rocks_store::RocksStorage,
-        utils::{MOUNT_PREFIX, PATH_PREFIX, kv_key_id, kv_key_mount_path, kv_key_path},
+        utils::{
+            MOUNT_PREFIX, PATH_PREFIX, kv_key_id, kv_key_mount_path, kv_key_path, kv_path_conf_key,
+        },
     },
     ufs::config::UfsConfig,
 };
@@ -225,5 +230,34 @@ impl MetadataStore for RaftMetadataStore {
             .map(|proto_node| BlockNode::try_from(proto_node))
             .collect::<Result<Vec<BlockNode>>>()?;
         Ok(nodes)
+    }
+
+    async fn set_path_conf(&self, conf: PathConf) -> Result<()> {
+        self.raft_client
+            .send_command(MetaCmd {
+                op: Some(meta_cmd::Op::PutPathConf(PutPathConf {
+                    full_path: conf.full_path.clone(),
+                    conf: conf.conf.clone(),
+                })),
+            })
+            .await
+            .map_err(|e| Error::Internal(format!("Failed to send path conf: {}", e)))?;
+        Ok(())
+    }
+
+    async fn get_path_conf(&self, path: &str) -> Result<Option<PathConf>> {
+        self.linearized().await?;
+        let key = kv_path_conf_key(path);
+        let value = self
+            .local_db
+            .get_kv_value(&key)
+            .map_err(|e| Error::Internal(format!("Failed to read path conf: {}", e)))?;
+        if let Some(value) = value {
+            let conf = PathConf::decode(value.as_slice())
+                .map_err(|e| Error::Internal(format!("Failed to decode PathConf: {}", e)))?;
+            Ok(Some(conf))
+        } else {
+            Ok(None)
+        }
     }
 }

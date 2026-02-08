@@ -3,6 +3,7 @@ pub const PATH_PREFIX: &[u8] = b"P:";
 pub const ID_PREFIX: &[u8] = b"I:";
 pub const BLOCK_NODE_PREFIX: &[u8] = b"BN:";
 pub const BLOCK_META_PREFIX: &[u8] = b"BM:";
+pub const PATH_CONF_PREFIX: &[u8] = b"PC:";
 
 /// Helper that turns a u64 into an 8-byte big-endian array
 pub fn u64be_bytes(x: u64) -> [u8; 8] {
@@ -46,5 +47,13 @@ pub fn kv_block_meta_key(file_id: String, index: u64) -> Vec<u8> {
     v.extend_from_slice(BLOCK_META_PREFIX);
     v.extend_from_slice(file_id.as_bytes());
     v.extend_from_slice(&index_bytes);
+    v
+}
+
+pub fn kv_path_conf_key<S: AsRef<str>>(path: S) -> Vec<u8> {
+    let s = path.as_ref();
+    let mut v = Vec::with_capacity(2 + s.len());
+    v.extend_from_slice(PATH_CONF_PREFIX);
+    v.extend_from_slice(s.as_bytes());
     v
 }

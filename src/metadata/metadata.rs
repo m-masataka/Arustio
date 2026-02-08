@@ -6,7 +6,7 @@
 
 use crate::{
     block::node::BlockNode, common::Result, core::file_metadata::FileMetadata,
-    core::file_metadata::MountInfo,
+    core::file_metadata::MountInfo, meta::PathConf,
 };
 use async_trait::async_trait;
 use uuid::Uuid;
@@ -47,4 +47,10 @@ pub trait MetadataStore: Send + Sync {
 
     /// Put Block Node
     async fn put_block_node(&self, block_node: BlockNode) -> Result<()>;
+
+    /// Save path-level configuration
+    async fn set_path_conf(&self, conf: PathConf) -> Result<()>;
+
+    /// Get path-level configuration
+    async fn get_path_conf(&self, path: &str) -> Result<Option<PathConf>>;
 }

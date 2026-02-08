@@ -3,8 +3,8 @@ use crate::{
     common::error::{Error, Result},
     core::file_metadata::{FileMetadata, MountInfo},
     meta::{
-        DeleteMountRequest, GetRequest, ListChildrenRequest, ListMountsRequest, PutMountRequest,
-        metadata_service_client::MetadataServiceClient,
+        DeleteMountRequest, GetPathConfRequest, GetRequest, ListChildrenRequest, ListMountsRequest,
+        PutMountRequest, SetPathConfRequest, metadata_service_client::MetadataServiceClient,
     },
 };
 use tonic::{Code, Request, Status, transport::Channel};
@@ -143,6 +143,28 @@ impl MetadataClient {
             block_nodes.push(block_node);
         }
         Ok(block_nodes)
+    }
+
+    // Path conf management
+    pub async fn set_path_conf(&self, conf: crate::meta::PathConf) -> Result<()> {
+        let request = Request::new(SetPathConfRequest { conf: Some(conf) });
+        let mut client = self.client.clone();
+        client
+            .set_path_conf(request)
+            .await
+            .map_err(|e| map_status("metadata.set_path_conf", None, e))?;
+        Ok(())
+    }
+
+    pub async fn get_path_conf(&self, path: String) -> Result<Option<crate::meta::PathConf>> {
+        let request = Request::new(GetPathConfRequest { path });
+        let mut client = self.client.clone();
+        let response = client
+            .get_path_conf(request)
+            .await
+            .map_err(|e| map_status("metadata.get_path_conf", None, e))?;
+        let res = response.into_inner();
+        if res.found { Ok(res.conf) } else { Ok(None) }
     }
 }
 

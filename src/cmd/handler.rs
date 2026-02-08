@@ -44,6 +44,9 @@ pub async fn handle_fs_command(command: FsCommands, vfs: VirtualFileSystem) -> a
         } => {
             handle_copy_to_local(remote_path, local_path, &vfs).await?;
         }
+        FsCommands::SetConf { path, conf } => {
+            handle_set_conf(path, conf, &vfs).await?;
+        }
     }
     Ok(())
 }
@@ -227,5 +230,26 @@ async fn handle_copy_to_local(
         total_bytes, local_path
     );
 
+    Ok(())
+}
+
+async fn handle_set_conf(
+    path: String,
+    conf: Vec<String>,
+    vfs: &VirtualFileSystem,
+) -> anyhow::Result<()> {
+    if conf.is_empty() {
+        anyhow::bail!("No configuration provided. Use KEY=VALUE");
+    }
+    let mut map = std::collections::HashMap::new();
+    for item in conf {
+        if let Some((k, v)) = item.split_once('=') {
+            map.insert(k.to_string(), v.to_string());
+        } else {
+            anyhow::bail!("Invalid conf format: {}. Use KEY=VALUE", item);
+        }
+    }
+    vfs.set_path_conf(&path, map).await?;
+    println!("Set path conf for {}", path);
     Ok(())
 }

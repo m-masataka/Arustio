@@ -73,4 +73,15 @@ pub enum FsCommands {
         #[arg(value_name = "LOCAL_PATH")]
         local_path: String,
     },
+
+    /// Set path configuration (e.g., writetype=NO_CACHE)
+    SetConf {
+        /// Path to set configuration on
+        #[arg(value_name = "PATH")]
+        path: String,
+
+        /// Key=Value pairs
+        #[arg(value_name = "KEY=VALUE")]
+        conf: Vec<String>,
+    },
 }

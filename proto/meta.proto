@@ -23,6 +23,7 @@ message MetaCmd {
     Mount   mount   = 3;
     Unmount unmount = 4;
     PutFileMeta put_file_meta = 5;
+    PutPathConf put_path_conf = 9;
 
     // ---- Block Node Management Command ----
     AddBlockNode add_block_node = 6;
@@ -57,6 +58,11 @@ message Unmount{
 message PutFileMeta {
   string full_path = 1;
   FileMetadata file_metadata = 2;
+}
+
+message PutPathConf {
+  string full_path = 1;
+  map<string, string> conf = 2;
 }
 
 message GetLeaderRequest {
@@ -146,6 +152,11 @@ message BlockDesc {
   uint32 size = 2;
   uint64 range_start = 3;
   uint64 range_end = 4;
+}
+
+message PathConf {
+  string full_path = 1;
+  map<string, string> conf = 2;
 }
 
 
@@ -258,6 +269,10 @@ service MetadataService {
 
   /// Block node management
   rpc ListBlockNodes(ListBlockNodesRequest) returns (ListBlockNodesResponse);
+
+  /// Path conf management
+  rpc SetPathConf(SetPathConfRequest) returns (SetPathConfResponse);
+  rpc GetPathConf(GetPathConfRequest) returns (GetPathConfResponse);
 }
 
 message GetRequest { string path = 1; }
@@ -292,3 +307,8 @@ message ListBlockNodesRequest {}
 message ListBlockNodesResponse {
   repeated BlockNodeInfo nodes = 1;
 }
+
+message SetPathConfRequest { PathConf conf = 1; }
+message SetPathConfResponse { bool created = 1; }
+message GetPathConfRequest { string path = 1; }
+message GetPathConfResponse { PathConf conf = 1; bool found = 2; }

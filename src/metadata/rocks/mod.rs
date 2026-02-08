@@ -10,10 +10,13 @@ use crate::{
     common::{Error, Result},
     core::file_metadata::{FileMetadata, MountInfo},
     meta::{
-        BlockNodeInfo as BlockNodeProto, FileMetadata as FileMetadataProto, Mount as MountInfoProto,
+        BlockNodeInfo as BlockNodeProto, FileMetadata as FileMetadataProto,
+        Mount as MountInfoProto, PathConf as PathConfProto,
     },
     metadata::metadata::MetadataStore,
-    metadata::utils::{MOUNT_PREFIX, PATH_PREFIX, kv_key_id, kv_key_mount_path, kv_key_path},
+    metadata::utils::{
+        MOUNT_PREFIX, PATH_PREFIX, kv_key_id, kv_key_mount_path, kv_key_path, kv_path_conf_key,
+    },
 };
 
 /// RocksDB-backed metadata store for single-node deployments.
@@ -244,6 +247,27 @@ impl RocksMetadataStore {
             )
             .map_err(map_rocks_err)
     }
+
+    fn save_path_conf_internal(&self, conf: &PathConfProto) -> Result<()> {
+        let mut encoded = Vec::new();
+        conf.encode(&mut encoded)
+            .map_err(|e| Error::Internal(format!("Failed to encode PathConf: {}", e)))?;
+        self.db
+            .put(kv_path_conf_key(&conf.full_path), encoded)
+            .map_err(map_rocks_err)
+    }
+
+    fn get_path_conf_internal(&self, path: &str) -> Result<Option<PathConfProto>> {
+        let value = self.db.get(kv_path_conf_key(path)).map_err(map_rocks_err)?;
+        match value {
+            Some(bytes) => {
+                let conf = PathConfProto::decode(&bytes[..])
+                    .map_err(|e| Error::Internal(format!("Failed to decode PathConf: {}", e)))?;
+                Ok(Some(conf))
+            }
+            None => Ok(None),
+        }
+    }
 }
 
 #[async_trait]
@@ -291,6 +315,14 @@ impl MetadataStore for RocksMetadataStore {
 
     async fn list_block_nodes(&self) -> Result<Vec<BlockNode>> {
         self.list_block_nodes_internal()
+    }
+
+    async fn set_path_conf(&self, conf: PathConfProto) -> Result<()> {
+        self.save_path_conf_internal(&conf)
+    }
+
+    async fn get_path_conf(&self, path: &str) -> Result<Option<PathConfProto>> {
+        self.get_path_conf_internal(path)
     }
 }
 
