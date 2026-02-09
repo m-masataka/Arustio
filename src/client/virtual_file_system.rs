@@ -98,6 +98,13 @@ pub struct VirtualFileSystem {
     cache: Arc<dyn CacheClient>,
 }
 
+pub struct ReadContext {
+    pub ufs: Arc<Ufs>,
+    pub relative_path: String,
+    pub metadata: FileMetadata,
+    pub cache_enabled: bool,
+}
+
 impl VirtualFileSystem {
     /// Create a new Virtual File System with mount support
     pub fn new(metadata_client: MetadataClient, cache: Arc<dyn CacheClient>) -> Self {
@@ -111,6 +118,14 @@ impl VirtualFileSystem {
     pub async fn restore_mounts(&self) -> Result<()> {
         // self.mount_table.restore_mounts().await
         Ok(())
+    }
+
+    pub async fn init_cache(&self) -> Result<()> {
+        self.cache.connection_pool().await
+    }
+
+    pub async fn cache_enabled_for_path(&self, path: &str) -> Result<bool> {
+        Ok(self.write_type_for_path(path).await? != WriteType::NoCache)
     }
 
     async fn write_type_for_path(&self, path: &str) -> Result<WriteType> {
@@ -151,6 +166,110 @@ impl VirtualFileSystem {
         };
         self.metadata_client.set_path_conf(conf).await?;
         Ok(())
+    }
+
+    pub async fn prepare_read_ctx(&self, path: &str) -> Result<ReadContext> {
+        let normalized_path = normalize_path(path)?;
+        let (ufs, relative_path, _mount_path) = self.get_mount_for_path(&normalized_path).await?;
+        let write_type = self.write_type_for_path(&normalized_path).await?;
+        let cache_enabled = write_type != WriteType::NoCache;
+
+        let metadata = self
+            .metadata_client
+            .get(normalized_path.clone())
+            .await?
+            .ok_or_else(|| Error::PathNotFound(normalized_path.clone()))?;
+        if !metadata.is_file() {
+            return Err(Error::NotAFile(normalized_path));
+        }
+
+        Ok(ReadContext {
+            ufs,
+            relative_path,
+            metadata,
+            cache_enabled,
+        })
+    }
+
+    pub async fn read_range_with_ctx(
+        &self,
+        ufs: Arc<Ufs>,
+        relative_path: &str,
+        metadata: &FileMetadata,
+        offset: u64,
+        size: u64,
+        cache_enabled: bool,
+    ) -> Result<Bytes> {
+        if size == 0 || offset >= metadata.size {
+            return Ok(Bytes::new());
+        }
+        let end = std::cmp::min(offset + size, metadata.size);
+        let block_size = block_size_bytes() as u64;
+        let start_block = offset / block_size;
+        let end_block = (end - 1) / block_size;
+        let mut cache_enabled = cache_enabled;
+        if cache_enabled {
+            if let Err(e) = self.cache.connection_pool().await {
+                tracing::warn!("cache connection unavailable, falling back to UFS: {}", e);
+                cache_enabled = false;
+            }
+        }
+
+        let mut out = BytesMut::new();
+        for block_index in start_block..=end_block {
+            let block_start = block_index * block_size;
+            let block_end = std::cmp::min(block_start + block_size, metadata.size);
+            let slice_start = std::cmp::max(offset, block_start) - block_start;
+            let slice_end = std::cmp::min(end, block_end) - block_start;
+            let slice_len = slice_end - slice_start;
+
+            if cache_enabled {
+                match self
+                    .cache
+                    .read_block_range(metadata.id, block_index, slice_start, slice_len)
+                    .await
+                {
+                    Ok(data) => {
+                        out.extend_from_slice(&data);
+                        continue;
+                    }
+                    Err(Error::CacheMiss { .. }) => {}
+                    Err(e) => {
+                        tracing::warn!(
+                            "cache read error for file {} block {}: {}",
+                            metadata.id,
+                            block_index,
+                            e
+                        );
+                    }
+                }
+            }
+
+            let ufs_bytes = ufs
+                .read_range(relative_path, block_start, block_end)
+                .await?;
+            if cache_enabled {
+                let cache_for_store = self.cache.clone();
+                let file_id_for_store = metadata.id;
+                let index_for_store = block_index;
+                let bytes_for_store = ufs_bytes.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = cache_for_store
+                        .write_block(file_id_for_store, index_for_store, bytes_for_store)
+                        .await
+                    {
+                        tracing::warn!(
+                            "failed to store block {} of file {} into cache: {}",
+                            index_for_store,
+                            file_id_for_store,
+                            e
+                        );
+                    }
+                });
+            }
+            out.extend_from_slice(&ufs_bytes[slice_start as usize..slice_end as usize]);
+        }
+        Ok(Bytes::from(out))
     }
 
     /// Generate a UFS path for a file based on VFS path
@@ -570,88 +689,16 @@ impl FileSystem for VirtualFileSystem {
     }
 
     async fn read_range(&self, path: &str, offset: u64, size: u64) -> Result<Bytes> {
-        let normalized_path = normalize_path(path)?;
-        let (ufs, relative_path, _mount_path) = self.get_mount_for_path(&normalized_path).await?;
-        let write_type = self.write_type_for_path(&normalized_path).await?;
-        let cache_enabled = write_type != WriteType::NoCache;
-
-        let metadata = self
-            .metadata_client
-            .get(normalized_path.clone())
-            .await?
-            .ok_or_else(|| Error::PathNotFound(normalized_path.clone()))?;
-        if !metadata.is_file() {
-            return Err(Error::NotAFile(normalized_path));
-        }
-        if size == 0 || offset >= metadata.size {
-            return Ok(Bytes::new());
-        }
-
-        let end = std::cmp::min(offset + size, metadata.size);
-        let blocks = plan_chunk_layout(metadata.size).await;
-        let cache = self.cache.clone();
-        if cache_enabled {
-            cache.connection_pool().await?;
-        }
-
-        let mut out = BytesMut::new();
-        for block in blocks {
-            if block.range_end <= offset || block.range_start >= end {
-                continue;
-            }
-            let slice_start = std::cmp::max(offset, block.range_start) - block.range_start;
-            let slice_end = std::cmp::min(end, block.range_end) - block.range_start;
-            let slice_len = slice_end - slice_start;
-
-            if cache_enabled {
-                match cache
-                    .read_block_range(metadata.id, block.index, slice_start, slice_len)
-                    .await
-                {
-                    Ok(data) => {
-                        out.extend_from_slice(&data);
-                        continue;
-                    }
-                    Err(Error::CacheMiss { .. }) => {
-                        // fall through to UFS read + cache fill
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            "cache read error for file {} block {}: {}",
-                            metadata.id,
-                            block.index,
-                            e
-                        );
-                    }
-                }
-            }
-
-            // Cache miss or disabled: read full block from UFS, then slice
-            let ufs_bytes = ufs
-                .read_range(&relative_path, block.range_start, block.range_end)
-                .await?;
-            if cache_enabled {
-                let cache_for_store = cache.clone();
-                let file_id_for_store = metadata.id;
-                let index_for_store = block.index;
-                let bytes_for_store = ufs_bytes.clone();
-                tokio::spawn(async move {
-                    if let Err(e) = cache_for_store
-                        .write_block(file_id_for_store, index_for_store, bytes_for_store)
-                        .await
-                    {
-                        tracing::warn!(
-                            "failed to store block {} of file {} into cache: {}",
-                            index_for_store,
-                            file_id_for_store,
-                            e
-                        );
-                    }
-                });
-            }
-            out.extend_from_slice(&ufs_bytes[slice_start as usize..slice_end as usize]);
-        }
-        Ok(Bytes::from(out))
+        let ctx = self.prepare_read_ctx(path).await?;
+        self.read_range_with_ctx(
+            ctx.ufs,
+            &ctx.relative_path,
+            &ctx.metadata,
+            offset,
+            size,
+            ctx.cache_enabled,
+        )
+        .await
     }
 
     async fn read_block(

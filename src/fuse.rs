@@ -3,6 +3,7 @@ use crate::{
     common::{Error, normalize_path},
     core::file_metadata::FileMetadata,
     core::file_system::FileSystem,
+    ufs::under_file_system::Ufs,
 };
 use bytes::{Bytes, BytesMut};
 use fuser::{
@@ -15,7 +16,7 @@ use std::{
     collections::HashMap,
     ffi::OsStr,
     sync::{
-        Mutex, RwLock,
+        Arc, Mutex, RwLock,
         atomic::{AtomicU64, Ordering},
     },
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -31,13 +32,27 @@ struct WriteHandle {
     dirty: bool,
 }
 
+#[derive(Clone)]
+struct ReadHandle {
+    path: String,
+    ufs: Arc<Ufs>,
+    relative_path: String,
+    metadata: FileMetadata,
+    cache_enabled: bool,
+}
+
+enum Handle {
+    Read(ReadHandle),
+    Write(WriteHandle),
+}
+
 pub struct ArustioFuse {
     vfs: VirtualFileSystem,
     rt: Runtime,
     inode_map: RwLock<HashMap<String, u64>>,
     reverse_map: RwLock<HashMap<u64, String>>,
     next_ino: AtomicU64,
-    handles: Mutex<HashMap<u64, WriteHandle>>,
+    handles: Mutex<HashMap<u64, Handle>>,
     next_fh: AtomicU64,
 }
 
@@ -295,11 +310,11 @@ impl Filesystem for ArustioFuse {
                         let fh = self.next_fh.fetch_add(1, Ordering::Relaxed);
                         self.handles.lock().unwrap().insert(
                             fh,
-                            WriteHandle {
+                            Handle::Write(WriteHandle {
                                 path,
                                 data: BytesMut::new(),
                                 dirty: false,
-                            },
+                            }),
                         );
                         reply.created(&TTL, &self.file_attr(ino, &meta), 0, fh, 0);
                     }
@@ -320,15 +335,36 @@ impl Filesystem for ArustioFuse {
             let fh = self.next_fh.fetch_add(1, Ordering::Relaxed);
             self.handles.lock().unwrap().insert(
                 fh,
-                WriteHandle {
+                Handle::Write(WriteHandle {
                     path,
                     data: BytesMut::from(&data[..]),
                     dirty: false,
-                },
+                }),
             );
             reply.opened(fh, 0);
         } else {
-            reply.opened(0, 0);
+            let res = self
+                .rt
+                .block_on(async { self.vfs.prepare_read_ctx(&path).await });
+            match res {
+                Ok(ctx) => {
+                    let fh = self.next_fh.fetch_add(1, Ordering::Relaxed);
+                    self.handles.lock().unwrap().insert(
+                        fh,
+                        Handle::Read(ReadHandle {
+                            path,
+                            ufs: ctx.ufs,
+                            relative_path: ctx.relative_path,
+                            metadata: ctx.metadata,
+                            cache_enabled: ctx.cache_enabled,
+                        }),
+                    );
+                    reply.opened(fh, 0);
+                }
+                Err(Error::PathNotFound(_)) => reply.error(ENOENT),
+                Err(Error::NotAFile(_)) => reply.error(EINVAL),
+                Err(_) => reply.error(EIO),
+            }
         }
     }
 
@@ -336,21 +372,61 @@ impl Filesystem for ArustioFuse {
         &mut self,
         _req: &Request<'_>,
         ino: u64,
-        _fh: u64,
+        fh: u64,
         offset: i64,
         size: u32,
         _flags: i32,
         _lock_owner: Option<u64>,
         reply: ReplyData,
     ) {
-        let Some(path) = self.path_for_ino(ino) else {
-            reply.error(ENOENT);
-            return;
-        };
         if offset < 0 {
             reply.error(EINVAL);
             return;
         }
+        if fh != 0 {
+            let read_handle = {
+                let handles = self.handles.lock().unwrap();
+                match handles.get(&fh) {
+                    Some(Handle::Read(handle)) => Some(handle.clone()),
+                    Some(Handle::Write(handle)) => {
+                        let offset = offset as usize;
+                        if offset >= handle.data.len() {
+                            reply.data(&[]);
+                            return;
+                        }
+                        let end = std::cmp::min(offset + size as usize, handle.data.len());
+                        reply.data(&handle.data[offset..end]);
+                        return;
+                    }
+                    None => None,
+                }
+            };
+            if let Some(handle) = read_handle {
+                let res = self.rt.block_on(async {
+                    self.vfs
+                        .read_range_with_ctx(
+                            handle.ufs,
+                            &handle.relative_path,
+                            &handle.metadata,
+                            offset as u64,
+                            size as u64,
+                            handle.cache_enabled,
+                        )
+                        .await
+                });
+                match res {
+                    Ok(data) => reply.data(&data),
+                    Err(Error::PathNotFound(_)) => reply.error(ENOENT),
+                    Err(_) => reply.error(EIO),
+                }
+                return;
+            }
+        }
+
+        let Some(path) = self.path_for_ino(ino) else {
+            reply.error(ENOENT);
+            return;
+        };
         let res = self
             .rt
             .block_on(async { self.vfs.read_range(&path, offset as u64, size as u64).await });
@@ -376,6 +452,10 @@ impl Filesystem for ArustioFuse {
         let mut handles = self.handles.lock().unwrap();
         let Some(handle) = handles.get_mut(&fh) else {
             reply.error(ENOENT);
+            return;
+        };
+        let Handle::Write(handle) = handle else {
+            reply.error(EINVAL);
             return;
         };
         if offset < 0 {
@@ -459,14 +539,19 @@ impl Filesystem for ArustioFuse {
     ) {
         let handle = self.handles.lock().unwrap().remove(&fh);
         if let Some(handle) = handle {
-            if handle.dirty {
-                if self
-                    .write_all(&handle.path, Bytes::from(handle.data))
-                    .is_err()
-                {
-                    reply.error(EIO);
-                    return;
+            match handle {
+                Handle::Write(handle) => {
+                    if handle.dirty {
+                        if self
+                            .write_all(&handle.path, Bytes::from(handle.data))
+                            .is_err()
+                        {
+                            reply.error(EIO);
+                            return;
+                        }
+                    }
                 }
+                Handle::Read(_) => {}
             }
         }
         reply.ok();

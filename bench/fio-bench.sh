@@ -11,9 +11,9 @@ arustio \
   -o secret_access_key=minioadmin \
   -o endpoint=http://minio:9000
 
-arustio \
-  fs --server http://arustio:50052 \
-  set-conf /data writetype=NO_CACHE
+# arustio \
+#   fs --server http://arustio:50052 \
+#   set-conf /data writetype=NO_CACHE
 
 
 
