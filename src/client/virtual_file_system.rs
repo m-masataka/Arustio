@@ -599,31 +599,21 @@ impl FileSystem for VirtualFileSystem {
             if block.range_end <= offset || block.range_start >= end {
                 continue;
             }
-            let block_bytes = if cache_enabled {
-                match cache.read_block(metadata.id, block.index).await {
-                    Ok(data) => data,
+            let slice_start = std::cmp::max(offset, block.range_start) - block.range_start;
+            let slice_end = std::cmp::min(end, block.range_end) - block.range_start;
+            let slice_len = slice_end - slice_start;
+
+            if cache_enabled {
+                match cache
+                    .read_block_range(metadata.id, block.index, slice_start, slice_len)
+                    .await
+                {
+                    Ok(data) => {
+                        out.extend_from_slice(&data);
+                        continue;
+                    }
                     Err(Error::CacheMiss { .. }) => {
-                        let ufs_bytes = ufs
-                            .read_range(&relative_path, block.range_start, block.range_end)
-                            .await?;
-                        let cache_for_store = cache.clone();
-                        let file_id_for_store = metadata.id;
-                        let index_for_store = block.index;
-                        let bytes_for_store = ufs_bytes.clone();
-                        tokio::spawn(async move {
-                            if let Err(e) = cache_for_store
-                                .write_block(file_id_for_store, index_for_store, bytes_for_store)
-                                .await
-                            {
-                                tracing::warn!(
-                                    "failed to store block {} of file {} into cache: {}",
-                                    index_for_store,
-                                    file_id_for_store,
-                                    e
-                                );
-                            }
-                        });
-                        ufs_bytes
+                        // fall through to UFS read + cache fill
                     }
                     Err(e) => {
                         tracing::warn!(
@@ -632,18 +622,34 @@ impl FileSystem for VirtualFileSystem {
                             block.index,
                             e
                         );
-                        ufs.read_range(&relative_path, block.range_start, block.range_end)
-                            .await?
                     }
                 }
-            } else {
-                ufs.read_range(&relative_path, block.range_start, block.range_end)
-                    .await?
-            };
+            }
 
-            let slice_start = std::cmp::max(offset, block.range_start) - block.range_start;
-            let slice_end = std::cmp::min(end, block.range_end) - block.range_start;
-            out.extend_from_slice(&block_bytes[slice_start as usize..slice_end as usize]);
+            // Cache miss or disabled: read full block from UFS, then slice
+            let ufs_bytes = ufs
+                .read_range(&relative_path, block.range_start, block.range_end)
+                .await?;
+            if cache_enabled {
+                let cache_for_store = cache.clone();
+                let file_id_for_store = metadata.id;
+                let index_for_store = block.index;
+                let bytes_for_store = ufs_bytes.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = cache_for_store
+                        .write_block(file_id_for_store, index_for_store, bytes_for_store)
+                        .await
+                    {
+                        tracing::warn!(
+                            "failed to store block {} of file {} into cache: {}",
+                            index_for_store,
+                            file_id_for_store,
+                            e
+                        );
+                    }
+                });
+            }
+            out.extend_from_slice(&ufs_bytes[slice_start as usize..slice_end as usize]);
         }
         Ok(Bytes::from(out))
     }

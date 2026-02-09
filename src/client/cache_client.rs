@@ -8,5 +8,12 @@ use uuid::Uuid;
 pub trait CacheClient: Send + Sync {
     async fn connection_pool(&self) -> Result<()>;
     async fn read_block(&self, file_id: Uuid, index: u64) -> Result<Bytes>;
+    async fn read_block_range(
+        &self,
+        file_id: Uuid,
+        index: u64,
+        offset: u64,
+        size: u64,
+    ) -> Result<Bytes>;
     async fn write_block(&self, file_id: Uuid, index: u64, data: Bytes) -> Result<()>;
 }

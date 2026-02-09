@@ -95,14 +95,40 @@ impl CacheClient for BlockNodeClient {
     }
 
     async fn read_block(&self, file_id: Uuid, index: u64) -> Result<Bytes> {
-        // Read block from the block node
+        self.read_block_range(file_id, index, 0, 0).await
+    }
+
+    async fn read_block_range(
+        &self,
+        file_id: Uuid,
+        index: u64,
+        offset: u64,
+        size: u64,
+    ) -> Result<Bytes> {
+        // Read block range from the block node
         let mut node = self.select_node(file_id, index).await?;
-        tracing::debug!("Reading block: file_id={}, index={}", file_id, index);
+        tracing::debug!(
+            "Reading block range: file_id={}, index={}, offset={}, size={}",
+            file_id,
+            index,
+            offset,
+            size
+        );
 
         let response = node
             .read_block(Request::new(ReadBlockRequest {
                 file_id: file_id.to_string(),
                 index,
+                offset: if offset == 0 && size == 0 {
+                    None
+                } else {
+                    Some(offset)
+                },
+                size: if offset == 0 && size == 0 {
+                    None
+                } else {
+                    Some(size)
+                },
             }))
             .await
             .map_err(|e| {

@@ -171,7 +171,7 @@ impl RocksMetadataStore {
     }
 
     fn list_mounts_internal(&self) -> Result<Vec<MountInfo>> {
-        tracing::info!(
+        tracing::debug!(
             "list_mounts from prefix='{}'",
             String::from_utf8_lossy(MOUNT_PREFIX)
         );
@@ -207,7 +207,6 @@ impl RocksMetadataStore {
             };
             mounts.push(mount);
         }
-        tracing::info!("Listed mounts: {:?}", mounts);
         Ok(mounts)
     }
 
@@ -305,7 +304,6 @@ impl MetadataStore for RocksMetadataStore {
     }
 
     async fn list_mounts(&self) -> Result<Vec<MountInfo>> {
-        tracing::info!("Listing mounts");
         self.list_mounts_internal()
     }
 

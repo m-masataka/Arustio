@@ -48,11 +48,24 @@ impl BlockNodeService for BlockNodeServiceImpl {
         match res_block_data {
             Ok(block_data) => {
                 let (tx, rx) = tokio::sync::mpsc::channel(128);
-                let mut start = 0;
                 let data_len = block_data.len();
+                let mut range_start = 0usize;
+                let mut range_end = data_len;
+                if let Some(off) = req.offset {
+                    range_start = off as usize;
+                }
+                if let Some(size) = req.size {
+                    range_end = range_start.saturating_add(size as usize);
+                }
+                if range_start > data_len {
+                    return Err(Status::out_of_range("offset out of range"));
+                }
+                range_end = range_end.min(data_len);
+
                 let chunk_size = grpc_chunk_size_bytes();
-                while start < data_len {
-                    let end = std::cmp::min(start + chunk_size, data_len);
+                let mut start = range_start;
+                while start < range_end {
+                    let end = std::cmp::min(start + chunk_size, range_end);
                     let chunk = block_data.slice(start..end);
                     let response = ReadBlockResponse {
                         data: chunk.to_vec(),

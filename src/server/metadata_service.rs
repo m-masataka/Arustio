@@ -256,7 +256,7 @@ impl MetadataService for MetadataServiceImpl {
                 return Ok(Response::new(GetPathConfResponse {
                     conf: None,
                     found: false,
-                }))
+                }));
             }
             Some(c) => c,
         };
