@@ -37,7 +37,7 @@ jobs:
             fuse3-devel \
             llvm-devel \
             clang-devel \
-            libclang
+            clang-libs
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
