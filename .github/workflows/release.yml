@@ -11,23 +11,28 @@ permissions:
 jobs:
   linux-x86_64:
     runs-on: ubuntu-24.04
+    container:
+      image: rockylinux:9
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Install system deps
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            build-essential \
+          dnf -y update
+          dnf -y install \
+            git \
+            gcc \
+            gcc-c++ \
             clang \
-            libclang-dev \
             cmake \
-            pkg-config \
+            make \
+            pkgconf-pkg-config \
             protobuf-compiler \
-            libssl-dev \
-            zlib1g-dev \
-            libfuse3-dev
+            openssl-devel \
+            zlib-devel \
+            fuse3-devel \
+            libclang-devel
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
