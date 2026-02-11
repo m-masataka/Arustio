@@ -1,0 +1,55 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  linux-x86_64:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            clang \
+            libclang-dev \
+            cmake \
+            pkg-config \
+            protobuf-compiler \
+            libssl-dev \
+            zlib1g-dev \
+            libfuse3-dev
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.91
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build (release)
+        run: cargo build --release
+
+      - name: Package
+        run: |
+          mkdir -p dist
+          cp target/release/arustio dist/
+          tar -C dist -czf arustio-linux-x86_64.tar.gz arustio
+          sha256sum arustio-linux-x86_64.tar.gz > arustio-linux-x86_64.tar.gz.sha256
+
+      - name: Publish Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            arustio-linux-x86_64.tar.gz
+            arustio-linux-x86_64.tar.gz.sha256
